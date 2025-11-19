@@ -1,0 +1,139 @@
+name: Create Release Package
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run tests (if any)
+        run: |
+          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+            npm test
+          else
+            echo "No tests configured, skipping..."
+          fi
+        continue-on-error: true
+      
+      - name: Create release package
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
+            VERSION=${INPUTS_VERSION:-$(node -p "require('./package.json').version")}
+          fi
+          
+          PACKAGE_NAME="tube-video-browser-${VERSION}"
+          
+          # Create a clean package directory
+          mkdir -p release-package
+          
+          # Copy necessary files
+          cp -r public release-package/
+          cp server.js release-package/
+          cp package.json release-package/
+          cp package-lock.json release-package/ 2>/dev/null || true
+          cp config.example.json release-package/ 2>/dev/null || true
+          cp README.md release-package/ 2>/dev/null || true
+          cp .gitignore release-package/ 2>/dev/null || true
+          
+          # Create necessary directories
+          mkdir -p release-package/thumbnails
+          mkdir -p release-package/resolutions
+          
+          # Create a .gitkeep file for directories
+          touch release-package/thumbnails/.gitkeep
+          touch release-package/resolutions/.gitkeep
+          
+          # Create package archive
+          cd release-package
+          tar -czf "../${PACKAGE_NAME}.tar.gz" .
+          cd ..
+          
+          # Also create a zip file
+          cd release-package
+          zip -r "../${PACKAGE_NAME}.zip" .
+          cd ..
+          
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+      
+      - name: Upload release package (tar.gz)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-tar.gz
+          path: ${{ env.PACKAGE_NAME }}.tar.gz
+          retention-days: 30
+      
+      - name: Upload release package (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-zip
+          path: ${{ env.PACKAGE_NAME }}.zip
+          retention-days: 30
+      
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ${{ env.PACKAGE_NAME }}.tar.gz
+            ${{ env.PACKAGE_NAME }}.zip
+          body: |
+            ## Release ${{ env.VERSION }}
+            
+            ### Installation
+            
+            1. Extract the package:
+               ```bash
+               tar -xzf ${{ env.PACKAGE_NAME }}.tar.gz
+               # or
+               unzip ${{ env.PACKAGE_NAME }}.zip
+               ```
+            
+            2. Install dependencies:
+               ```bash
+               npm install
+               ```
+            
+            3. Configure the application:
+               - Copy `config.example.json` to `config.json` and update settings
+               - Create `credentials.txt` with username:password pairs
+               - Create `filelist.txt` with your video/image/PDF file list
+            
+            4. Start the server:
+               ```bash
+               npm start
+               ```
+            
+            ### Requirements
+            
+            - Node.js 20 or higher
+            - FFmpeg (for video thumbnail generation)
+            - See README.md for full details
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

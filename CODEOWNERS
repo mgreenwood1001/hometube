@@ -1,0 +1,13 @@
+# CODEOWNERS file
+# This file defines code owners for different parts of the repository.
+# Each line is a file pattern followed by one or more owners.
+# Owners are automatically requested for review when code in their area changes.
+#
+# Replace @your-username with your actual GitHub username or team name
+# Examples:
+#   * @username
+#   * @org/team-name
+#   * user1@example.com user2@example.com
+
+# Default owner for everything
+* @mgreenwood1001
