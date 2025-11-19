@@ -80,20 +80,5 @@ http://localhost:3000
 - **SESSION_SECRET**: Secret key for session encryption (set via environment variable, defaults to a placeholder)
 - **credentials.txt**: Username/password file (format: `username:password`, one per line)
 
-## File Structure
-
-```
-tube/
-├── server.js          # Express server and API endpoints
-├── package.json       # Dependencies
-├── filelist.txt       # List of video files (one per line)
-├── credentials.txt    # Username/password file (format: username:password)
-├── thumbnails/        # Generated video thumbnails (auto-created)
-├── public/
-│   ├── index.html    # Main HTML page
-│   ├── login.html    # Login page
-│   ├── style.css     # Styling
-│   └── app.js        # Client-side JavaScript
-└── README.md         # This file
 ```
 
