@@ -2,13 +2,15 @@ name: Create Release Package
 
 on:
   push:
+    branches:
+      - main  # Run on every commit to main
     tags:
-      - 'v*'  # Trigger on version tags like v1.0.0
+      - 'v*'  # Also trigger on version tags like v1.0.0
   workflow_dispatch:  # Allow manual triggering
     inputs:
       version:
         description: 'Version number (e.g., 1.0.0)'
-        required: true
+        required: false
         type: string
 
 jobs:
@@ -39,9 +41,18 @@ jobs:
       
       - name: Create release package
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
-            VERSION=${INPUTS_VERSION:-$(node -p "require('./package.json').version")}
+          # Determine version based on trigger
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # Tag-based release
+            VERSION=${GITHUB_REF#refs/tags/v}
+          elif [ -n "${{ inputs.version }}" ]; then
+            # Manual workflow with version input
+            VERSION="${{ inputs.version }}"
+          else
+            # Branch commit - use package version with commit SHA
+            BASE_VERSION=$(node -p "require('./package.json').version")
+            SHORT_SHA=${GITHUB_SHA::7}
+            VERSION="${BASE_VERSION}-${SHORT_SHA}"
           fi
           
           PACKAGE_NAME="tube-video-browser-${VERSION}"
