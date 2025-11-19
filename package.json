@@ -1,6 +1,6 @@
 {
   "name": "tube-video-browser",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "YouTube-like video browser with word stemming and pagination",
   "main": "server.js",
   "scripts": {
@@ -14,4 +14,3 @@
     "cookie-parser": "^1.4.6"
   }
 }
-
