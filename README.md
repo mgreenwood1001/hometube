@@ -1,6 +1,28 @@
-# Tube - Video Browser
+# HomeTube - Video Browser
 
 A YouTube-like video browser built with Node.js that lists videos from a file list, supports word stemming, and provides pagination.
+
+## Installation
+
+### Via npm (Recommended)
+
+```bash
+npm install -g @mgreenwood1001/hometube
+```
+
+Then run:
+```bash
+hometube
+```
+
+### Manual Installation
+
+Clone the repository and install dependencies:
+```bash
+git clone https://github.com/mgreenwood1001/hometube.git
+cd hometube
+npm install
+```
 
 ## Features
 
@@ -13,6 +35,23 @@ A YouTube-like video browser built with Node.js that lists videos from a file li
 - 🏷️ Clickable stem tags to filter videos
 - 📑 Pagination support
 - 🔎 Search functionality with AND/OR logic
+- 📊 Video resolution detection and filtering
+- 📁 Support for videos, images, and PDF documents
+
+## Quick Setup
+
+### Automated Setup (Recommended)
+
+Use the provided script to automatically scan a directory and generate `filelist.txt` and `config.json`:
+
+```bash
+./seed-media.sh /path/to/your/media/files
+```
+
+This script will:
+- Scan the directory recursively for videos, images, and PDFs
+- Generate `filelist.txt` with all found files (relative paths)
+- Create/update `config.json` with the media directory path
 
 ## Setup
 
@@ -36,23 +75,23 @@ npm install
      user:anotherpassword
      ```
 
-4. Configure the base path:
-   - Edit `server.js` and set the `BASE_PATH` variable to your actual video directory
-   - Or set the `BASE_PATH` environment variable:
-   ```bash
-   export BASE_PATH=/path/to/your/videos
-   ```
+4. Configure the base path and file list:
+   - **Option A (Recommended)**: Use the seed script:
+     ```bash
+     ./seed-media.sh /path/to/your/media/files
+     ```
+     This automatically creates `filelist.txt` and `config.json`.
+   
+   - **Option B (Manual)**: 
+     - Edit `config.json` and set the `videoBasePath` to your media directory
+     - Create `filelist.txt` with one filename per line (relative to `videoBasePath`)
 
-5. Create or update `filelist.txt`:
-   - Add one video filename per line
-   - Filenames should be relative to the `BASE_PATH`
-
-6. Start the server:
+5. Start the server:
 ```bash
 npm start
 ```
 
-7. Open your browser and navigate to:
+6. Open your browser and navigate to:
    - You will be redirected to the login page
    - Enter your username and password from `credentials.txt`
 ```
