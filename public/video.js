@@ -138,8 +138,9 @@ async function loadVideoPage() {
             mainContent.style.visibility = 'visible';
         }
         
-        // Set page title
-        document.title = `${video.displayName} - HomeTube`;
+        // Set page title (will be updated with system name from config)
+        const systemName = document.getElementById('systemName')?.textContent || 'HomeTube';
+        document.title = `${video.displayName} - ${systemName}`;
         
         // Display video info first
         const titleElement = document.getElementById('videoTitle');
@@ -236,7 +237,7 @@ function displayRelatedVideos(videos) {
             </div>
             <div class="related-video-info">
                 <div class="related-video-title">${escapeHtml(video.displayName)}</div>
-                <div class="related-video-channel">HomeTube</div>
+                <div class="related-video-channel">${document.getElementById('systemName')?.textContent || 'HomeTube'}</div>
                 <div class="related-video-meta">Related video</div>
             </div>
         </div>

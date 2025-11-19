@@ -1,3 +1,4 @@
+._*
 node_modules/
 .DS_Store
 *.log
@@ -6,4 +7,5 @@ thumbnails/
 credentials.txt
 resolutions/
 resolution-cache.json
+config.json
 

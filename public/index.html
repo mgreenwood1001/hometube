@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HomeTube - Video Browser</title>
+    <title id="pageTitle">HomeTube - Video Browser</title>
     <link rel="stylesheet" href="style.css">
     <!-- Video.js CSS -->
     <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
@@ -12,8 +12,8 @@
     <header class="header">
         <div class="header-content">
             <a href="/" class="logo-link">
-                <img src="/images/logo.png" alt="HomeTube" class="logo-image">
-                <span class="logo-text">HomeTube</span>
+                <img src="/images/logo.png" alt="HomeTube" class="logo-image" id="logoAlt">
+                <span class="logo-text" id="systemName">HomeTube</span>
             </a>
             <div class="search-container">
                 <input type="text" id="searchInput" size="35" placeholder="Search (e.g., 'cooking AND recipe' or 'travel OR adventure')" class="search-input">
@@ -80,6 +80,18 @@
 
     <!-- Video.js JavaScript -->
     <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
+    <script>
+        // Load system configuration
+        fetch('/api/config')
+            .then(response => response.json())
+            .then(config => {
+                const systemName = config.systemName || 'HomeTube';
+                document.getElementById('systemName').textContent = systemName;
+                document.getElementById('logoAlt').alt = systemName;
+                document.getElementById('pageTitle').textContent = `${systemName} - Video Browser`;
+            })
+            .catch(error => console.error('Error loading config:', error));
+    </script>
     <script src="app.js"></script>
 </body>
 </html>

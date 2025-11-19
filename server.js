@@ -9,11 +9,12 @@ const cookieParser = require('cookie-parser');
 const app = express();
 const PORT = 3000;
 
-// Base path for video files - adjust this to your actual video directory
-const BASE_PATH = process.env.BASE_PATH || '/srv/nas/research/p/';
+// Base path for video files - will be loaded from config
+let BASE_PATH = '/srv/nas/research/p/';
 const FILELIST_PATH = path.join(__dirname, 'filelist.txt');
 const THUMBNAILS_DIR = path.join(__dirname, 'thumbnails');
 const CREDENTIALS_FILE = path.join(__dirname, 'credentials.txt');
+const CONFIG_FILE = path.join(__dirname, 'config.json');
 
 // Create thumbnails directory if it doesn't exist
 if (!fs.existsSync(THUMBNAILS_DIR)) {
@@ -79,8 +80,8 @@ function verifyCredentials(username, password) {
 
 // Authentication middleware
 function requireAuth(req, res, next) {
-  // Allow access to login page and login API without authentication
-  if (req.path === '/login' || req.path === '/api/login' || req.path === '/api/auth/status') {
+  // Allow access to login page, login API, and config API without authentication
+  if (req.path === '/login' || req.path === '/api/login' || req.path === '/api/auth/status' || req.path === '/api/config') {
     return next();
   }
   
@@ -95,6 +96,54 @@ function requireAuth(req, res, next) {
   
   res.redirect('/login');
 }
+
+// Load configuration
+function loadConfig() {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const content = fs.readFileSync(CONFIG_FILE, 'utf-8');
+      const config = JSON.parse(content);
+      
+      // Update BASE_PATH if specified in config
+      if (config.videoBasePath) {
+        BASE_PATH = config.videoBasePath;
+        // Ensure it ends with a slash
+        if (!BASE_PATH.endsWith('/')) {
+          BASE_PATH += '/';
+        }
+      }
+      
+      return {
+        systemName: config.systemName || 'HomeTube',
+        videoBasePath: BASE_PATH
+      };
+    }
+  } catch (error) {
+    console.error('Error loading config file:', error);
+  }
+  
+  // Default values
+  return {
+    systemName: 'HomeTube',
+    videoBasePath: BASE_PATH
+  };
+}
+
+let appConfig = loadConfig();
+
+// Also allow environment variable to override (for backward compatibility)
+if (process.env.BASE_PATH) {
+  BASE_PATH = process.env.BASE_PATH;
+  if (!BASE_PATH.endsWith('/')) {
+    BASE_PATH += '/';
+  }
+  appConfig.videoBasePath = BASE_PATH;
+}
+
+// API endpoint to get configuration (accessible without auth for login page)
+app.get('/api/config', (req, res) => {
+  res.json(appConfig);
+});
 
 // Apply authentication middleware to all routes
 app.use(requireAuth);
