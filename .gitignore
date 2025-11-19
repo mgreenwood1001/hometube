@@ -9,3 +9,8 @@ resolutions/
 resolution-cache.json
 config.json
 
+# Release packages
+*.tar.gz
+*.zip
+release-package/
+
