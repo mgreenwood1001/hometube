@@ -5,6 +5,7 @@ node_modules/
 .env
 thumbnails/
 credentials.txt
+filelist.txt
 resolutions/
 resolution-cache.json
 config.json
