@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+*.log
+.env
+thumbnails/
+credentials.txt
+resolutions/
+resolution-cache.json
+

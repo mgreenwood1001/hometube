@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HomeTube - Video Player</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/video.css">
+    <!-- Video.js CSS -->
+    <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <a href="/" class="logo-link">
+                <img src="/images/logo.png" alt="HomeTube" class="logo-image">
+                <span class="logo-text">HomeTube</span>
+            </a>
+            <div class="search-container">
+                <input type="text" id="searchInput" placeholder="Search stems..." class="search-input" onkeypress="handleSearchKeyPress(event)">
+            </div>
+        </div>
+    </header>
+
+    <div class="video-page-container">
+        <div id="loadingMessage" class="loading" style="text-align: center; padding: 2rem;">
+            Loading video...
+        </div>
+        <div class="video-main-content" id="videoMainContent" style="display: none; visibility: hidden;">
+            <!-- Main Video Section (Left) -->
+            <div class="video-main-section">
+                <!-- Video Player -->
+                <div id="videoPlayerContainer" class="video-player-wrapper">
+                    <video
+                        id="videoPlayer"
+                        class="video-js vjs-big-play-centered"
+                        controls
+                        preload="auto"
+                        data-setup="{}">
+                        <p class="vjs-no-js">
+                            To view this video please enable JavaScript, and consider upgrading to a web browser that
+                            <a href="https://videojs.com/html5-video-support/" target="_blank">supports HTML5 video</a>.
+                        </p>
+                    </video>
+                </div>
+                
+                <!-- Video Information Section -->
+                <div class="video-info-section">
+                    <h1 id="videoTitle" class="video-title-large">Loading...</h1>
+                    
+                    <div class="video-meta-bar">
+                        <div class="video-stats">
+                            <span id="videoViews" class="video-views"></span>
+                        </div>
+                        <div class="video-actions">
+                            <button class="action-button like-button" title="Like">
+                                <span class="action-icon">👍</span>
+                                <span class="action-label">Like</span>
+                            </button>
+                            <button class="action-button" title="Share">
+                                <span class="action-icon">🔗</span>
+                                <span class="action-label">Share</span>
+                            </button>
+                            <button class="action-button" title="Save">
+                                <span class="action-icon">💾</span>
+                                <span class="action-label">Save</span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="video-description-section">
+                        <div id="videoStems" class="video-stems-large">
+                            <p class="loading">Loading tags...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Related Videos Sidebar (Right) -->
+            <aside class="related-videos-sidebar">
+                <div id="relatedVideosList" class="related-videos-list">
+                    <p class="loading">Loading related videos...</p>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- Video.js JavaScript -->
+    <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
+    <script src="/video.js"></script>
+</body>
+</html>
+
