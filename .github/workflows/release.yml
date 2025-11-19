@@ -104,7 +104,7 @@ jobs:
           path: ${{ env.PACKAGE_NAME }}.zip
           retention-days: 30
       
-      - name: Create GitHub Release
+      - name: Create GitHub Release (Tags only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
@@ -145,6 +145,52 @@ jobs:
             - See README.md for full details
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create Draft Release (Main branch)
+        if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ${{ env.PACKAGE_NAME }}.tar.gz
+            ${{ env.PACKAGE_NAME }}.zip
+          tag_name: "main-${{ env.VERSION }}"
+          name: "Build ${{ env.VERSION }}"
+          body: |
+            ## Build ${{ env.VERSION }}
+            
+            This is an automated build from the main branch.
+            
+            **Commit:** ${{ github.sha }}
+            **Branch:** ${{ github.ref_name }}
+            **Workflow:** ${{ github.workflow }}
+            
+            ### Installation
+            
+            1. Extract the package:
+               ```bash
+               tar -xzf ${{ env.PACKAGE_NAME }}.tar.gz
+               # or
+               unzip ${{ env.PACKAGE_NAME }}.zip
+               ```
+            
+            2. Install dependencies:
+               ```bash
+               npm install
+               ```
+            
+            3. Configure the application:
+               - Copy `config.example.json` to `config.json` and update settings
+               - Create `credentials.txt` with username:password pairs
+               - Create `filelist.txt` with your video/image/PDF file list
+            
+            4. Start the server:
+               ```bash
+               npm start
+               ```
+          draft: true
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
