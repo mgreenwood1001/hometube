@@ -27,7 +27,24 @@
 
     <div class="container">
         <aside class="sidebar">
-            <h2>Resolutions</h2>
+            <h2>Type</h2>
+            <div id="fileTypeList" class="stems-list">
+                <div class="file-type-filter">
+                    <button class="stem-tag file-type-tag" onclick="filterByFileType('all')" id="fileType-all">
+                        All
+                    </button>
+                    <button class="stem-tag file-type-tag" onclick="filterByFileType('video')" id="fileType-video">
+                        Videos
+                    </button>
+                    <button class="stem-tag file-type-tag" onclick="filterByFileType('pdf')" id="fileType-pdf">
+                        PDFs
+                    </button>
+                    <button class="stem-tag file-type-tag" onclick="filterByFileType('image')" id="fileType-image">
+                        Images
+                    </button>
+                </div>
+            </div>
+            <h2 style="margin-top: 1.5rem;">Resolutions</h2>
             <div id="resolutionsList" class="stems-list">
                 <p class="loading">Loading resolutions...</p>
             </div>

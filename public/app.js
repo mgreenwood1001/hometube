@@ -1,6 +1,7 @@
 let currentPage = 1;
 let currentStem = null;
 let currentResolution = null;
+let currentFileType = null; // 'video', 'pdf', 'image', or null for all
 let currentFilterMode = 'OR';
 let videosPerPage = 12;
 let allStems = []; // Store all stems for suggestions
@@ -59,6 +60,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const videosPerPageSelect = document.getElementById('videosPerPageSelect');
     if (videosPerPageSelect) {
         videosPerPage = parseInt(videosPerPageSelect.value);
+    }
+    
+    // Set "All" button as active by default
+    const allButton = document.getElementById('fileType-all');
+    if (allButton) {
+        allButton.classList.add('active');
     }
     
     // Check for search parameter in URL
@@ -307,12 +314,29 @@ function displayResolutions(resolutions) {
     }).join('');
 }
 
+// Filter by file type
+function filterByFileType(fileType) {
+    currentPage = 1;
+    currentFileType = fileType === 'all' ? null : fileType;
+    
+    // Update active button state
+    document.querySelectorAll('.file-type-tag').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    const activeButton = document.getElementById(`fileType-${fileType}`);
+    if (activeButton) {
+        activeButton.classList.add('active');
+    }
+    
+    loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType);
+}
+
 // Filter by resolution
 function filterByResolution(resolution) {
     currentPage = 1;
     currentStem = null;
     currentResolution = resolution;
-    loadVideos(1, null, 'OR', resolution);
+    loadVideos(1, null, 'OR', resolution, currentFileType);
 }
 
 // Detect video resolution
@@ -357,7 +381,7 @@ function displayStems(stems) {
 }
 
 // Load videos with pagination and filtering
-async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null) {
+async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null, fileType = null) {
     try {
         const params = new URLSearchParams({
             page: page,
@@ -373,16 +397,21 @@ async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null)
             params.append('resolution', resolution);
         }
         
+        if (fileType && fileType !== 'all') {
+            params.append('fileType', fileType);
+        }
+        
         const response = await fetch(`/api/videos?${params}`);
         const data = await response.json();
         
         displayVideos(data.videos);
         displayPagination(data.pagination);
-        updateFilterInfo(stem, data.pagination.totalVideos, mode, resolution);
+        updateFilterInfo(stem, data.pagination.totalVideos, mode, resolution, fileType);
         
         currentPage = page;
         currentStem = stem;
         currentResolution = resolution;
+        currentFileType = fileType;
         currentFilterMode = mode;
     } catch (error) {
         console.error('Error loading videos:', error);
@@ -401,9 +430,21 @@ function displayVideos(videos) {
     }
     
     videosGrid.innerHTML = videos.map(video => {
-        // Detect resolution if unknown
-        if (video.resolution === 'Unknown') {
+        // Detect resolution if unknown (only for videos)
+        if (video.fileType === 'video' && video.resolution === 'Unknown') {
             detectVideoResolution(video.filename);
+        }
+        
+        const isPDF = video.fileType === 'pdf';
+        const isImage = video.fileType === 'image';
+        let overlayIcon = '▶';
+        let overlayClass = 'play-overlay';
+        if (isPDF) {
+            overlayIcon = '📄';
+            overlayClass = 'pdf-overlay';
+        } else if (isImage) {
+            overlayIcon = '🖼️';
+            overlayClass = 'image-overlay';
         }
         
         return `
@@ -411,8 +452,10 @@ function displayVideos(videos) {
             <div class="video-thumbnail">
                 <img src="${escapeHtml(video.thumbnailPath)}" alt="${escapeHtml(video.displayName)}" 
                      onerror="this.style.display='none'; this.parentElement.classList.add('no-thumbnail');">
-                <div class="play-overlay">▶</div>
+                <div class="${overlayClass}">${overlayIcon}</div>
                 ${video.resolution && video.resolution !== 'Unknown' ? `<div class="video-resolution-badge">${video.resolution}</div>` : ''}
+                ${isPDF ? '<div class="file-type-badge">PDF</div>' : ''}
+                ${isImage ? '<div class="file-type-badge">Image</div>' : ''}
             </div>
             <div class="video-info">
                 <div class="video-title">${escapeHtml(video.displayName)}</div>
@@ -455,10 +498,19 @@ function displayPagination(pagination) {
 }
 
 // Update filter info display
-function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null) {
+function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fileType = null) {
     const filterInfo = document.getElementById('filterInfo');
     
     const filters = [];
+    
+    if (fileType && fileType !== 'all') {
+        const fileTypeLabels = {
+            'video': 'Videos',
+            'pdf': 'PDFs',
+            'image': 'Images'
+        };
+        filters.push(`Type: <strong>${escapeHtml(fileTypeLabels[fileType] || fileType)}</strong>`);
+    }
     
     if (resolution) {
         filters.push(`Resolution: <strong>${escapeHtml(resolution)}</strong>`);
@@ -509,7 +561,7 @@ function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null) {
 // Filter videos by multiple stems with mode
 function filterByStems(stem, mode = 'OR') {
     currentPage = 1;
-    loadVideos(1, stem, mode, currentResolution);
+    loadVideos(1, stem, mode, currentResolution, currentFileType);
     // Don't auto-update search input - let user type freely
 }
 
@@ -523,14 +575,25 @@ function clearFilter() {
     currentPage = 1;
     currentStem = null;
     currentResolution = null;
+    currentFileType = null;
     currentFilterMode = 'OR';
-    loadVideos(1, null, 'OR', null);
+    
+    // Reset file type button to "All"
+    document.querySelectorAll('.file-type-tag').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    const allButton = document.getElementById('fileType-all');
+    if (allButton) {
+        allButton.classList.add('active');
+    }
+    
+    loadVideos(1, null, 'OR', null, null);
     document.getElementById('searchInput').value = '';
 }
 
 // Go to specific page
 function goToPage(page) {
-    loadVideos(page, currentStem, currentFilterMode, currentResolution);
+    loadVideos(page, currentStem, currentFilterMode, currentResolution, currentFileType);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -593,7 +656,20 @@ function getVideoType(filename) {
 // Navigate to video page
 function navigateToVideo(filename) {
     const encodedFilename = encodeURIComponent(filename);
-    window.location.href = `/video/${encodedFilename}`;
+    
+    // Determine file type from filename extension
+    const ext = filename.toLowerCase().split('.').pop();
+    const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'tif', 'ico'];
+    const pdfExtensions = ['pdf'];
+    
+    if (imageExtensions.includes(ext)) {
+        window.location.href = `/image/${encodedFilename}`;
+    } else if (pdfExtensions.includes(ext)) {
+        window.location.href = `/pdf/${encodedFilename}`;
+    } else {
+        // Default to video page
+        window.location.href = `/video/${encodedFilename}`;
+    }
 }
 
 // Play video in modal (kept for backward compatibility if needed)

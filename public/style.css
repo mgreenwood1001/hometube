@@ -344,7 +344,9 @@ body {
     opacity: 0.8;
 }
 
-.play-overlay {
+.play-overlay,
+.pdf-overlay,
+.image-overlay {
     position: absolute;
     top: 50%;
     left: 50%;
@@ -356,8 +358,23 @@ body {
     text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
 }
 
-.video-card:hover .play-overlay {
+.video-card:hover .play-overlay,
+.video-card:hover .pdf-overlay,
+.video-card:hover .image-overlay {
     opacity: 0.9;
+}
+
+.file-type-badge {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    background-color: rgba(220, 38, 38, 0.9);
+    color: #ffffff;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    z-index: 2;
 }
 
 .video-resolution-badge {

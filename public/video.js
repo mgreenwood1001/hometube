@@ -148,10 +148,15 @@ async function loadVideoPage() {
             titleElement.textContent = video.displayName;
         }
         
-        // Set video views (placeholder)
+        // Set file type label
         const viewsElement = document.getElementById('videoViews');
         if (viewsElement) {
-            viewsElement.textContent = 'Video';
+            const fileTypeLabels = {
+                'pdf': 'PDF Document',
+                'image': 'Image',
+                'video': 'Video'
+            };
+            viewsElement.textContent = fileTypeLabels[video.fileType] || 'File';
         }
         
         const stemsContainer = document.getElementById('videoStems');
@@ -165,19 +170,46 @@ async function loadVideoPage() {
             }
         }
         
-        // Initialize and load video player
-        const player = initVideoPlayer();
-        if (player) {
-            const videoType = getVideoType(video.fullPath);
-            console.log('Setting video source:', video.fullPath, 'Type:', videoType);
-            player.src({
-                type: videoType,
-                src: video.fullPath
-            });
-            player.load();
+        const videoPlayerContainer = document.getElementById('videoPlayerContainer');
+        
+        // Handle PDF files
+        if (video.fileType === 'pdf') {
+            if (videoPlayerContainer) {
+                // Hide video player and show PDF viewer
+                videoPlayerContainer.innerHTML = `
+                    <iframe 
+                        id="pdfViewer" 
+                        src="${escapeHtml(video.fullPath)}" 
+                        style="width: 100%; height: 100%; min-height: 600px; border: none; background: #1a1a1a;"
+                        type="application/pdf">
+                    </iframe>
+                `;
+            }
+        } else if (video.fileType === 'image') {
+            // Handle image files
+            if (videoPlayerContainer) {
+                videoPlayerContainer.innerHTML = `
+                    <img 
+                        src="${escapeHtml(video.fullPath)}" 
+                        alt="${escapeHtml(video.displayName)}"
+                        style="width: 100%; height: 100%; object-fit: contain; background: #1a1a1a;">
+                `;
+            }
         } else {
-            console.error('Failed to initialize video player');
-            showError('Failed to initialize video player. Please refresh the page.');
+            // Initialize and load video player for video files
+            const player = initVideoPlayer();
+            if (player) {
+                const videoType = getVideoType(video.fullPath);
+                console.log('Setting video source:', video.fullPath, 'Type:', videoType);
+                player.src({
+                    type: videoType,
+                    src: video.fullPath
+                });
+                player.load();
+            } else {
+                console.error('Failed to initialize video player');
+                showError('Failed to initialize video player. Please refresh the page.');
+            }
         }
         
         // Display related videos

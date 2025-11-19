@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="pageTitle">HomeTube - PDF Viewer</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/video.css">
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <a href="/" class="logo-link">
+                <img src="/images/logo.png" alt="HomeTube" class="logo-image" id="logoAlt">
+                <span class="logo-text" id="systemName">HomeTube</span>
+            </a>
+            <div class="search-container">
+                <input type="text" id="searchInput" placeholder="Search stems..." class="search-input" onkeypress="handleSearchKeyPress(event)">
+            </div>
+        </div>
+    </header>
+
+    <div class="video-page-container">
+        <div id="loadingMessage" class="loading" style="text-align: center; padding: 2rem;">
+            Loading PDF...
+        </div>
+        <div class="video-main-content" id="pdfMainContent" style="display: none; visibility: hidden;">
+            <!-- Main PDF Section (Left) -->
+            <div class="video-main-section">
+                <!-- PDF Viewer -->
+                <div id="pdfViewerContainer" class="video-player-wrapper">
+                    <iframe 
+                        id="pdfViewer" 
+                        src="" 
+                        style="width: 100%; height: 100%; min-height: 600px; border: none; background: #1a1a1a;"
+                        type="application/pdf"
+                        allow="fullscreen">
+                    </iframe>
+                    <div style="position: absolute; top: 1rem; right: 1rem; z-index: 10;">
+                        <a id="pdfDownloadLink" href="" download="" 
+                           style="display: inline-block; padding: 0.5rem 1rem; background-color: rgba(0, 0, 0, 0.7); color: white; text-decoration: none; border-radius: 4px; font-size: 0.9rem; border: 1px solid rgba(255, 255, 255, 0.3);"
+                           title="Download PDF">
+                            💾 Download
+                        </a>
+                        <a id="pdfOpenLink" href="" target="_blank"
+                           style="display: inline-block; padding: 0.5rem 1rem; background-color: rgba(0, 0, 0, 0.7); color: white; text-decoration: none; border-radius: 4px; font-size: 0.9rem; border: 1px solid rgba(255, 255, 255, 0.3); margin-left: 0.5rem;"
+                           title="Open PDF in new tab">
+                            🔗 Open
+                        </a>
+                    </div>
+                </div>
+                
+                <!-- PDF Information Section -->
+                <div class="video-info-section">
+                    <h1 id="pdfTitle" class="video-title-large">Loading...</h1>
+                    
+                    <div class="video-meta-bar">
+                        <div class="video-stats">
+                            <span id="pdfViews" class="video-views"></span>
+                        </div>
+                        <div class="video-actions">
+                            <button class="action-button like-button" title="Like">
+                                <span class="action-icon">👍</span>
+                                <span class="action-label">Like</span>
+                            </button>
+                            <button class="action-button" title="Share">
+                                <span class="action-icon">🔗</span>
+                                <span class="action-label">Share</span>
+                            </button>
+                            <button class="action-button" title="Save">
+                                <span class="action-icon">💾</span>
+                                <span class="action-label">Save</span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="video-description-section">
+                        <div id="pdfStems" class="video-stems-large">
+                            <p class="loading">Loading tags...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Related PDFs Sidebar (Right) -->
+            <aside class="related-videos-sidebar">
+                <div id="relatedPdfsList" class="related-videos-list">
+                    <p class="loading">Loading related PDFs...</p>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <script>
+        // Load system configuration
+        fetch('/api/config')
+            .then(response => response.json())
+            .then(config => {
+                const systemName = config.systemName || 'HomeTube';
+                document.getElementById('systemName').textContent = systemName;
+                document.getElementById('logoAlt').alt = systemName;
+                document.getElementById('pageTitle').textContent = `${systemName} - PDF Viewer`;
+            })
+            .catch(error => console.error('Error loading config:', error));
+    </script>
+    <script src="/pdf.js"></script>
+</body>
+</html>
+

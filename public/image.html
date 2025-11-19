@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="pageTitle">HomeTube - Image Viewer</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/video.css">
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <a href="/" class="logo-link">
+                <img src="/images/logo.png" alt="HomeTube" class="logo-image" id="logoAlt">
+                <span class="logo-text" id="systemName">HomeTube</span>
+            </a>
+            <div class="search-container">
+                <input type="text" id="searchInput" placeholder="Search stems..." class="search-input" onkeypress="handleSearchKeyPress(event)">
+            </div>
+        </div>
+    </header>
+
+    <div class="video-page-container">
+        <div id="loadingMessage" class="loading" style="text-align: center; padding: 2rem;">
+            Loading image...
+        </div>
+        <div class="video-main-content" id="imageMainContent" style="display: none; visibility: hidden;">
+            <!-- Main Image Section (Left) -->
+            <div class="video-main-section">
+                <!-- Image Viewer -->
+                <div id="imageViewerContainer" class="video-player-wrapper">
+                    <img id="imageViewer" src="" alt="" style="width: 100%; height: 100%; object-fit: contain; background: #1a1a1a; cursor: pointer;" onclick="toggleImageFullscreen()">
+                    <button id="fullscreenButton" class="fullscreen-button" onclick="toggleImageFullscreen()" title="Enter Fullscreen">
+                        <span class="fullscreen-icon">⛶</span>
+                    </button>
+                </div>
+                
+                <!-- Image Information Section -->
+                <div class="video-info-section">
+                    <h1 id="imageTitle" class="video-title-large">Loading...</h1>
+                    
+                    <div class="video-meta-bar">
+                        <div class="video-stats">
+                            <span id="imageViews" class="video-views"></span>
+                        </div>
+                        <div class="video-actions">
+                            <button class="action-button like-button" title="Like">
+                                <span class="action-icon">👍</span>
+                                <span class="action-label">Like</span>
+                            </button>
+                            <button class="action-button" title="Share">
+                                <span class="action-icon">🔗</span>
+                                <span class="action-label">Share</span>
+                            </button>
+                            <button class="action-button" title="Save">
+                                <span class="action-icon">💾</span>
+                                <span class="action-label">Save</span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="video-description-section">
+                        <div id="imageStems" class="video-stems-large">
+                            <p class="loading">Loading tags...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Related Images Sidebar (Right) -->
+            <aside class="related-videos-sidebar">
+                <div id="relatedImagesList" class="related-videos-list">
+                    <p class="loading">Loading related images...</p>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <script>
+        // Load system configuration
+        fetch('/api/config')
+            .then(response => response.json())
+            .then(config => {
+                const systemName = config.systemName || 'HomeTube';
+                document.getElementById('systemName').textContent = systemName;
+                document.getElementById('logoAlt').alt = systemName;
+                document.getElementById('pageTitle').textContent = `${systemName} - Image Viewer`;
+            })
+            .catch(error => console.error('Error loading config:', error));
+    </script>
+    <script src="/image.js"></script>
+</body>
+</html>
+
