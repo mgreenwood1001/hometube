@@ -13,6 +13,9 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write  # Required to create releases and push tags/commits
+
 jobs:
   build-and-package:
     runs-on: ubuntu-latest
