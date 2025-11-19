@@ -396,6 +396,15 @@ app.get('/api/videos', (req, res) => {
     }
   }
   
+  // Randomize videos on the first page only (when no filters are applied)
+  if (page === 1 && !stemFilter && !resolutionFilter) {
+    // Fisher-Yates shuffle algorithm
+    for (let i = videos.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [videos[i], videos[j]] = [videos[j], videos[i]];
+    }
+  }
+  
   // Calculate pagination
   const startIndex = (page - 1) * limit;
   const endIndex = startIndex + limit;
