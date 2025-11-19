@@ -161,6 +161,13 @@ function getThumbnailPath(filename) {
   return path.join(THUMBNAILS_DIR, `${safeName}.jpg`);
 }
 
+// PDF thumbnail generation is disabled to avoid crashes
+// PDFs will use a placeholder SVG icon instead
+// If you want to enable PDF thumbnails, you can:
+// 1. Install poppler-utils: sudo apt-get install poppler-utils (Linux) or brew install poppler (macOS)
+// 2. Use pdf-poppler or similar library
+// 3. Or use a headless browser solution (but Puppeteer was causing crashes)
+
 // Generate thumbnail from video
 function generateThumbnail(videoPath, thumbnailPath, callback) {
   // Ensure we have absolute paths
@@ -307,6 +314,25 @@ function getVideoResolutionFromFiles(filename) {
   return 'Unknown';
 }
 
+// Helper function to detect file type
+function getFileType(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  if (ext === '.pdf') {
+    return 'pdf';
+  }
+  // Common image extensions
+  const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.tiff', '.tif', '.ico'];
+  if (imageExtensions.includes(ext)) {
+    return 'image';
+  }
+  // Common video extensions
+  const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp', '.ogv'];
+  if (videoExtensions.includes(ext)) {
+    return 'video';
+  }
+  return 'unknown';
+}
+
 // Helper function to extract words from filename and stem them
 function extractStems(filename) {
   // Remove file extension
@@ -338,10 +364,11 @@ function getVideoList() {
     return files.map(file => {
       const fullPath = path.join(BASE_PATH, file);
       const stems = extractStems(file);
+      const fileType = getFileType(file);
       const thumbnailPath = getThumbnailPath(file);
       
-      // Get resolution from resolution files
-      const resolution = getVideoResolutionFromFiles(file);
+      // Get resolution from resolution files (only for videos)
+      const resolution = fileType === 'video' ? getVideoResolutionFromFiles(file) : null;
       
       return {
         filename: file,
@@ -349,7 +376,8 @@ function getVideoList() {
         thumbnailPath: `/api/thumbnail/${encodeURIComponent(file)}`,
         displayName: path.basename(file),
         stems: stems,
-        resolution: resolution
+        resolution: resolution,
+        fileType: fileType
       };
     });
   } catch (error) {
@@ -365,15 +393,23 @@ app.get('/api/videos', (req, res) => {
   const stemFilter = req.query.stem || null;
   const filterMode = req.query.mode || 'OR'; // 'AND' or 'OR'
   const resolutionFilter = req.query.resolution || null;
+  const fileTypeFilter = req.query.fileType || null; // 'video', 'pdf', 'image', or null for all
   
   let videos = getVideoList();
   
-  // Filter by resolution if provided
+  // Filter by file type if provided
+  if (fileTypeFilter && fileTypeFilter !== 'all') {
+    videos = videos.filter(video => video.fileType === fileTypeFilter);
+  }
+  
+  // Filter by resolution if provided (only for videos)
   if (resolutionFilter) {
     // Get videos from the resolution file
     const resolutionVideos = loadVideosForResolution(resolutionFilter);
     const resolutionSet = new Set(resolutionVideos);
-    videos = videos.filter(video => resolutionSet.has(video.filename));
+    videos = videos.filter(video => 
+      video.fileType === 'video' && resolutionSet.has(video.filename)
+    );
   }
   
   // Filter by stem(s) if provided
@@ -397,7 +433,7 @@ app.get('/api/videos', (req, res) => {
   }
   
   // Randomize videos on the first page only (when no filters are applied)
-  if (page === 1 && !stemFilter && !resolutionFilter) {
+  if (page === 1 && !stemFilter && !resolutionFilter && !fileTypeFilter) {
     // Fisher-Yates shuffle algorithm
     for (let i = videos.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -458,10 +494,16 @@ app.get('/api/resolutions', (req, res) => {
 // API endpoint to detect and save video resolution
 app.get('/api/detect-resolution/:filename(*)', (req, res) => {
   const filename = decodeURIComponent(req.params.filename);
-  const videoPath = path.join(BASE_PATH, filename);
+  const filePath = path.join(BASE_PATH, filename);
+  const fileType = getFileType(filename);
+  
+  // Only process video files
+  if (fileType !== 'video') {
+    return res.json({ resolution: null, error: 'Not a video file' });
+  }
   
   // Security check
-  const resolvedPath = path.resolve(videoPath);
+  const resolvedPath = path.resolve(filePath);
   const resolvedBase = path.resolve(BASE_PATH);
   
   if (!resolvedPath.startsWith(resolvedBase)) {
@@ -475,7 +517,7 @@ app.get('/api/detect-resolution/:filename(*)', (req, res) => {
   }
   
   // Detect resolution
-  getVideoResolution(videoPath, (err, result) => {
+  getVideoResolution(filePath, (err, result) => {
     if (err) {
       console.error('Error detecting resolution:', err);
       return res.json({ resolution: 'Unknown', error: err.message });
@@ -499,13 +541,13 @@ app.get('/api/detect-resolution/:filename(*)', (req, res) => {
   });
 });
 
-// Serve video files
+// Serve video and PDF files
 app.get('/api/video/:filename(*)', (req, res) => {
   const filename = req.params.filename;
-  const videoPath = path.join(BASE_PATH, filename);
+  const filePath = path.join(BASE_PATH, filename);
   
   // Security check: ensure the path is within BASE_PATH
-  const resolvedPath = path.resolve(videoPath);
+  const resolvedPath = path.resolve(filePath);
   const resolvedBase = path.resolve(BASE_PATH);
   
   if (!resolvedPath.startsWith(resolvedBase)) {
@@ -513,40 +555,63 @@ app.get('/api/video/:filename(*)', (req, res) => {
   }
   
   // Check if file exists
-  if (!fs.existsSync(videoPath)) {
-    return res.status(404).json({ error: 'Video not found' });
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
   }
   
-  // Serve the video file (resolvedPath is already absolute)
+  // Set appropriate content type
+  const fileType = getFileType(filename);
+  if (fileType === 'pdf') {
+    res.setHeader('Content-Type', 'application/pdf');
+  }
+  
+  // Serve the file (resolvedPath is already absolute)
   res.sendFile(resolvedPath);
 });
 
 // Serve thumbnail images
 app.get('/api/thumbnail/:filename(*)', (req, res) => {
   const filename = decodeURIComponent(req.params.filename);
-  const videoPath = path.join(BASE_PATH, filename);
+  const filePath = path.join(BASE_PATH, filename);
+  const fileType = getFileType(filename);
   const thumbnailPath = getThumbnailPath(filename);
   
   // Security check: ensure the path is within BASE_PATH
-  const resolvedPath = path.resolve(videoPath);
+  const resolvedPath = path.resolve(filePath);
   const resolvedBase = path.resolve(BASE_PATH);
   
   if (!resolvedPath.startsWith(resolvedBase)) {
     return res.status(403).json({ error: 'Access denied' });
   }
   
-  // Check if video file exists
-  if (!fs.existsSync(videoPath)) {
-    return res.status(404).json({ error: 'Video not found' });
+  // Check if file exists
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
   }
-  
-  // Resolve thumbnail path to absolute
-  const absoluteThumbnailPath = path.resolve(thumbnailPath);
   
   // Helper function to check if response is still writable
   function isResponseWritable(res) {
     return !res.headersSent && !res.writableEnded && !res.destroyed;
   }
+  
+  // For images, serve the image file directly as thumbnail
+  if (fileType === 'image') {
+    return res.sendFile(resolvedPath, (err) => {
+      if (err) {
+        if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') {
+          console.log(`Client disconnected while sending image: ${resolvedPath}`);
+          return;
+        }
+        console.error(`Error sending image file ${resolvedPath}:`, err);
+        if (isResponseWritable(res)) {
+          res.status(500).json({ error: 'Error serving image' });
+        }
+      }
+    });
+  }
+  
+  // Resolve thumbnail path to absolute
+  const absoluteThumbnailPath = path.resolve(thumbnailPath);
   
   // If thumbnail exists, serve it
   if (fs.existsSync(absoluteThumbnailPath)) {
@@ -565,39 +630,60 @@ app.get('/api/thumbnail/:filename(*)', (req, res) => {
     });
   }
   
-  // Otherwise, generate thumbnail on-the-fly
-  generateThumbnail(videoPath, thumbnailPath, (err, generatedPath) => {
-    if (err) {
-      // If thumbnail generation fails, return a placeholder or error
-      console.error('Thumbnail generation error:', err);
-      if (isResponseWritable(res)) {
-        return res.status(500).json({ error: 'Failed to generate thumbnail' });
-      }
-      return;
-    }
-    
-    // Serve the newly generated thumbnail (generatedPath is already absolute)
-    if (generatedPath && fs.existsSync(generatedPath)) {
-      res.sendFile(generatedPath, (err) => {
-        if (err) {
-          // ECONNABORTED means client disconnected - this is normal, don't log as error
-          if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') {
-            console.log(`Client disconnected while sending generated thumbnail: ${generatedPath}`);
-            return;
-          }
-          console.error(`Error sending generated thumbnail ${generatedPath}:`, err);
-          if (isResponseWritable(res)) {
-            res.status(500).json({ error: 'Error serving generated thumbnail' });
-          }
+  // For PDFs, serve placeholder SVG icon
+  // PDF thumbnail generation is disabled to avoid crashes
+  if (fileType === 'pdf') {
+    const pdfIconSvg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="320" height="180" xmlns="http://www.w3.org/2000/svg">
+  <rect width="320" height="180" fill="#1a1a1a"/>
+  <rect x="100" y="40" width="120" height="100" fill="#dc2626" rx="4"/>
+  <text x="160" y="110" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="white" text-anchor="middle">PDF</text>
+  <text x="160" y="160" font-family="Arial, sans-serif" font-size="12" fill="#aaaaaa" text-anchor="middle">Document</text>
+</svg>`;
+    res.setHeader('Content-Type', 'image/svg+xml');
+    return res.send(pdfIconSvg);
+  }
+  
+  // For videos, generate thumbnail on-the-fly
+  if (fileType === 'video') {
+    generateThumbnail(filePath, thumbnailPath, (err, generatedPath) => {
+      if (err) {
+        // If thumbnail generation fails, return a placeholder or error
+        console.error('Thumbnail generation error:', err);
+        if (isResponseWritable(res)) {
+          return res.status(500).json({ error: 'Failed to generate thumbnail' });
         }
-      });
-    } else {
-      console.error(`Generated thumbnail not found: ${generatedPath}`);
-      if (isResponseWritable(res)) {
-        res.status(500).json({ error: 'Thumbnail file not found after generation' });
+        return;
       }
+      
+      // Serve the newly generated thumbnail (generatedPath is already absolute)
+      if (generatedPath && fs.existsSync(generatedPath)) {
+        res.sendFile(generatedPath, (err) => {
+          if (err) {
+            // ECONNABORTED means client disconnected - this is normal, don't log as error
+            if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') {
+              console.log(`Client disconnected while sending generated thumbnail: ${generatedPath}`);
+              return;
+            }
+            console.error(`Error sending generated thumbnail ${generatedPath}:`, err);
+            if (isResponseWritable(res)) {
+              res.status(500).json({ error: 'Error serving generated thumbnail' });
+            }
+          }
+        });
+      } else {
+        console.error(`Generated thumbnail not found: ${generatedPath}`);
+        if (isResponseWritable(res)) {
+          res.status(500).json({ error: 'Thumbnail file not found after generation' });
+        }
+      }
+    });
+  } else {
+    // Unknown file type, return 404
+    if (isResponseWritable(res)) {
+      res.status(404).json({ error: 'Thumbnail not available for this file type' });
     }
-  });
+  }
 });
 
 // Login page
@@ -656,9 +742,10 @@ app.get('/api/video-info/:filename(*)', (req, res) => {
     return res.status(404).json({ error: 'Video not found' });
   }
   
-  // Find related videos based on shared stems
+  // Find related items based on shared stems, filtered by same file type
   const relatedVideos = videos
-    .filter(v => v.filename !== filename) // Exclude current video
+    .filter(v => v.filename !== filename) // Exclude current item
+    .filter(v => v.fileType === currentVideo.fileType) // Only same file type
     .map(video => {
       // Calculate similarity score based on shared stems
       const sharedStems = video.stems.filter(stem => 
@@ -672,9 +759,9 @@ app.get('/api/video-info/:filename(*)', (req, res) => {
         sharedStems
       };
     })
-    .filter(video => video.similarityScore > 0) // Only videos with at least one shared stem
+    .filter(video => video.similarityScore > 0) // Only items with at least one shared stem
     .sort((a, b) => b.similarityScore - a.similarityScore) // Sort by similarity
-    .slice(0, 20); // Limit to 20 related videos
+    .slice(0, 20); // Limit to 20 related items
   
   res.json({
     video: currentVideo,
@@ -697,6 +784,34 @@ app.get('/video/:filename(*)', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'video.html'));
 });
 
+// Serve the image page
+app.get('/image/:filename(*)', (req, res) => {
+  const filename = req.params.filename;
+  
+  // Don't serve HTML page for static file requests (CSS, JS, etc.)
+  // These should be handled by express.static above
+  if (filename.endsWith('.css') || filename.endsWith('.js') || filename.endsWith('.ico')) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+  
+  // Serve the image.html page - the actual image will be loaded via API in image.js
+  res.sendFile(path.join(__dirname, 'public', 'image.html'));
+});
+
+// Serve the PDF page
+app.get('/pdf/:filename(*)', (req, res) => {
+  const filename = req.params.filename;
+  
+  // Don't serve HTML page for static file requests (CSS, JS, etc.)
+  // These should be handled by express.static above
+  if (filename.endsWith('.css') || filename.endsWith('.js') || filename.endsWith('.ico')) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+  
+  // Serve the pdf.html page - the actual PDF will be loaded via API in pdf.js
+  res.sendFile(path.join(__dirname, 'public', 'pdf.html'));
+});
+
 // Serve the main page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -707,4 +822,5 @@ app.listen(PORT, () => {
   console.log(`Base path: ${BASE_PATH}`);
   console.log(`Filelist: ${FILELIST_PATH}`);
 });
+
 
