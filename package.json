@@ -1,6 +1,6 @@
 {
   "name": "@mgreenwood1001/hometube",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "YouTube-like video browser with word stemming, pagination, and support for videos, images, and PDFs",
   "main": "server.js",
   "bin": {
