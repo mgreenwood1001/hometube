@@ -447,8 +447,17 @@ function displayVideos(videos) {
             overlayClass = 'image-overlay';
         }
         
+        const videoFilename = encodeURIComponent(video.filename);
+        const videoUrl = `/api/video/${videoFilename}`;
+        
         return `
-        <div class="video-card" onclick="navigateToVideo('${encodeURIComponent(video.filename)}')">
+        <div class="video-card" 
+             data-filename="${escapeHtml(video.filename)}"
+             data-file-type="${video.fileType}"
+             data-video-url="${videoUrl}"
+             onclick="navigateToVideo('${videoFilename}')"
+             onmouseenter="handleVideoHover(this)"
+             onmouseleave="handleVideoLeave(this)">
             <div class="video-thumbnail">
                 <img src="${escapeHtml(video.thumbnailPath)}" alt="${escapeHtml(video.displayName)}" 
                      onerror="this.style.display='none'; this.parentElement.classList.add('no-thumbnail');">
@@ -456,6 +465,7 @@ function displayVideos(videos) {
                 ${video.resolution && video.resolution !== 'Unknown' ? `<div class="video-resolution-badge">${video.resolution}</div>` : ''}
                 ${isPDF ? '<div class="file-type-badge">PDF</div>' : ''}
                 ${isImage ? '<div class="file-type-badge">Image</div>' : ''}
+                <div class="video-preview-container hidden"></div>
             </div>
             <div class="video-info">
                 <div class="video-title">${escapeHtml(video.displayName)}</div>
@@ -654,6 +664,143 @@ function getVideoType(filename) {
 }
 
 // Navigate to video page
+// Hover preview functionality
+let hoverTimeout = null;
+let currentPreviewVideo = null;
+let currentPreviewCard = null;
+
+function handleVideoHover(cardElement) {
+    // Only show preview for videos
+    const fileType = cardElement.getAttribute('data-file-type');
+    if (fileType !== 'video') {
+        return;
+    }
+    
+    // Clear any existing timeout
+    if (hoverTimeout) {
+        clearTimeout(hoverTimeout);
+    }
+    
+    // Store reference to current card
+    currentPreviewCard = cardElement;
+    
+    // Wait 500ms before showing preview (avoid accidental triggers)
+    hoverTimeout = setTimeout(() => {
+        showVideoPreview(cardElement);
+    }, 500);
+}
+
+function handleVideoLeave(cardElement) {
+    // Clear timeout if mouse leaves before delay
+    if (hoverTimeout) {
+        clearTimeout(hoverTimeout);
+        hoverTimeout = null;
+    }
+    
+    // Hide preview
+    hideVideoPreview(cardElement);
+}
+
+function showVideoPreview(cardElement) {
+    // Don't show if this is not the current card
+    if (cardElement !== currentPreviewCard) {
+        return;
+    }
+    
+    // Double-check it's a video
+    const fileType = cardElement.getAttribute('data-file-type');
+    if (fileType !== 'video') {
+        return;
+    }
+    
+    const videoUrl = cardElement.getAttribute('data-video-url');
+    const previewContainer = cardElement.querySelector('.video-preview-container');
+    
+    if (!previewContainer || !videoUrl) {
+        return;
+    }
+    
+    // Hide thumbnail image
+    const thumbnailImg = cardElement.querySelector('.video-thumbnail img');
+    if (thumbnailImg) {
+        thumbnailImg.style.opacity = '0';
+    }
+    
+    // Hide overlay icon
+    const overlay = cardElement.querySelector('.play-overlay');
+    if (overlay) {
+        overlay.style.opacity = '0';
+    }
+    
+    // Show preview container
+    previewContainer.classList.remove('hidden');
+    
+    // Create video element if it doesn't exist
+    let previewVideo = previewContainer.querySelector('video');
+    if (!previewVideo) {
+        previewVideo = document.createElement('video');
+        previewVideo.className = 'video-preview-player';
+        previewVideo.muted = true;
+        previewVideo.loop = true;
+        previewVideo.playsInline = true;
+        previewVideo.preload = 'metadata';
+        previewVideo.setAttribute('playsinline', '');
+        previewVideo.setAttribute('webkit-playsinline', '');
+        previewContainer.appendChild(previewVideo);
+    }
+    
+    // Only load if video source is different
+    const currentSrc = previewVideo.src || previewVideo.getAttribute('src');
+    if (currentSrc !== videoUrl) {
+        previewVideo.src = videoUrl;
+        currentPreviewVideo = previewVideo;
+        
+        // Play video after it loads
+        previewVideo.addEventListener('loadedmetadata', () => {
+            if (cardElement === currentPreviewCard) {
+                previewVideo.play().catch(err => {
+                    // Silently handle autoplay restrictions
+                    console.log('Preview autoplay prevented (normal):', err.message);
+                });
+            }
+        }, { once: true });
+    } else if (previewVideo.paused) {
+        // Resume if already loaded
+        previewVideo.play().catch(err => {
+            console.log('Preview play error:', err);
+        });
+    }
+}
+
+function hideVideoPreview(cardElement) {
+    const previewContainer = cardElement.querySelector('.video-preview-container');
+    if (previewContainer) {
+        previewContainer.classList.add('hidden');
+    }
+    
+    // Show thumbnail image again
+    const thumbnailImg = cardElement.querySelector('.video-thumbnail img');
+    if (thumbnailImg) {
+        thumbnailImg.style.opacity = '1';
+    }
+    
+    // Show overlay icon again
+    const overlay = cardElement.querySelector('.play-overlay');
+    if (overlay) {
+        overlay.style.opacity = '';
+    }
+    
+    // Pause and cleanup video
+    if (currentPreviewVideo) {
+        currentPreviewVideo.pause();
+        currentPreviewVideo.currentTime = 0;
+        // Don't remove the video element, just pause it for reuse
+        currentPreviewVideo = null;
+    }
+    
+    currentPreviewCard = null;
+}
+
 function navigateToVideo(filename) {
     const encodedFilename = encodeURIComponent(filename);
     

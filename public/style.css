@@ -323,6 +323,38 @@ body {
     overflow: hidden;
 }
 
+.video-preview-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    z-index: 10;
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+    pointer-events: none;
+}
+
+.video-preview-container:not(.hidden) {
+    opacity: 1;
+}
+
+.video-preview-container.hidden {
+    display: none;
+}
+
+.video-preview-player {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.video-thumbnail img {
+    transition: opacity 0.3s ease-in-out;
+}
+
 .video-thumbnail img {
     width: 100%;
     height: 100%;
@@ -408,6 +440,7 @@ body {
     color: #ffffff;
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
