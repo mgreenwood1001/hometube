@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -5,6 +7,17 @@ const natural = require('natural');
 const ffmpeg = require('fluent-ffmpeg');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
+
+// Face recognition service (optional - only loaded if dependencies are available)
+let FaceRecognitionService = null;
+let faceService = null;
+try {
+  FaceRecognitionService = require('./face-recognition-service');
+  const FACES_DIR = path.join(__dirname, 'faces');
+  // Will be initialized after BASE_PATH is loaded
+} catch (error) {
+  console.log('Face recognition not available (dependencies not installed)');
+}
 
 const app = express();
 const PORT = 3000;
@@ -138,6 +151,18 @@ if (process.env.BASE_PATH) {
     BASE_PATH += '/';
   }
   appConfig.videoBasePath = BASE_PATH;
+}
+
+// Initialize face recognition service if available
+if (FaceRecognitionService) {
+  try {
+    const FACES_DIR = path.join(__dirname, 'faces');
+    faceService = new FaceRecognitionService(BASE_PATH, FACES_DIR);
+    console.log('Face recognition service initialized');
+  } catch (error) {
+    console.error('Error initializing face recognition service:', error);
+    faceService = null;
+  }
 }
 
 // API endpoint to get configuration (accessible without auth for login page)
@@ -729,6 +754,70 @@ app.get('/api/auth/status', (req, res) => {
     username: req.session && req.session.username || null
   });
 });
+
+// Face recognition API endpoints
+if (faceService) {
+  // Detect faces in an image
+  app.post('/api/detect-faces/:filename(*)', async (req, res) => {
+    try {
+      const filename = decodeURIComponent(req.params.filename);
+      const result = await faceService.processImage(filename);
+      res.json(result);
+    } catch (error) {
+      console.error('Face detection error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get all face groups
+  app.get('/api/face-groups', (req, res) => {
+    try {
+      const groups = faceService.getFaceGroups();
+      res.json(groups);
+    } catch (error) {
+      console.error('Error getting face groups:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get images in a specific face group
+  app.get('/api/face-group/:groupId', (req, res) => {
+    try {
+      const images = faceService.getGroupImages(req.params.groupId);
+      res.json({ 
+        groupId: req.params.groupId, 
+        images,
+        count: images.length
+      });
+    } catch (error) {
+      console.error('Error getting face group:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Batch process images for face detection
+  app.post('/api/process-faces', async (req, res) => {
+    try {
+      const { filenames } = req.body;
+      if (!Array.isArray(filenames)) {
+        return res.status(400).json({ error: 'filenames must be an array' });
+      }
+
+      // Process in background and return immediately
+      res.json({ message: 'Processing started', count: filenames.length });
+      
+      // Process asynchronously
+      faceService.processImages(filenames, (current, total, filename) => {
+        console.log(`Face processing: ${current}/${total} - ${filename}`);
+      }).catch(error => {
+        console.error('Batch face processing error:', error);
+      });
+    } catch (error) {
+      console.error('Error starting face processing:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+}
 
 // API endpoint to get a single video and related videos
 app.get('/api/video-info/:filename(*)', (req, res) => {
