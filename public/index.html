@@ -7,6 +7,8 @@
     <link rel="stylesheet" href="style.css">
     <!-- Video.js CSS -->
     <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
+    <!-- Flatpickr CSS for date range picker -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
 </head>
 <body width="100%">
     <header class="header">
@@ -27,7 +29,24 @@
 
     <div class="container">
         <aside class="sidebar">
-            <h2>Type</h2>
+            <h2>Date Range</h2>
+            <div id="dateFilter" class="date-filter">
+                <button class="stem-tag date-filter-tag active" onclick="filterByDate('all')" id="dateFilter-all">
+                    All Time
+                </button>
+                <div class="date-range-inputs" id="dateRangeInputs" style="display: none;">
+                    <input type="text" id="dateRangePicker" placeholder="Click to select date range" style="cursor: pointer;">
+                    <button class="date-clear-button" onclick="clearDateFilter()">Clear</button>
+                </div>
+                <button class="stem-tag date-filter-tag" onclick="showDateRangeInputs()" id="dateFilter-custom">
+                    Custom Range
+                </button>
+            </div>
+            <h2 style="margin-top: 1.5rem;">Date Tree</h2>
+            <div id="dateTree" class="date-tree">
+                <p class="loading">Loading dates...</p>
+            </div>
+            <h2 style="margin-top: 1.5rem;">Type</h2>
             <div id="fileTypeList" class="stems-list">
                 <div class="file-type-filter">
                     <button class="stem-tag file-type-tag" onclick="filterByFileType('all')" id="fileType-all">
@@ -97,6 +116,8 @@
 
     <!-- Video.js JavaScript -->
     <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
+    <!-- Flatpickr JavaScript for date range picker -->
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.js"></script>
     <script>
         // Load system configuration
         fetch('/api/config')

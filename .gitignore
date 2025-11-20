@@ -9,6 +9,7 @@ filelist.txt
 resolutions/
 resolution-cache.json
 config.json
+date-cache.json
 
 # Release packages
 *.tar.gz

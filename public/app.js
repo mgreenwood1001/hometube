@@ -3,8 +3,13 @@ let currentStem = null;
 let currentResolution = null;
 let currentFileType = null; // 'video', 'pdf', 'image', or null for all
 let currentFilterMode = 'OR';
+let currentDateFrom = null;
+let currentDateTo = null;
 let videosPerPage = 12;
 let allStems = []; // Store all stems for suggestions
+let dateRange = { minDate: null, maxDate: null };
+let dateCounts = {}; // Store file counts per date
+let dateRangePicker = null; // Flatpickr instance
 
 // Parse search query for AND/OR logic
 function parseSearchQuery(query) {
@@ -55,6 +60,8 @@ function parseSearchQuery(query) {
 document.addEventListener('DOMContentLoaded', () => {
     loadStems();
     loadResolutions();
+    loadDateRange();
+    loadDateCounts();
     
     // Set initial videos per page from select
     const videosPerPageSelect = document.getElementById('videosPerPageSelect');
@@ -336,7 +343,7 @@ function filterByResolution(resolution) {
     currentPage = 1;
     currentStem = null;
     currentResolution = resolution;
-    loadVideos(1, null, 'OR', resolution, currentFileType);
+    loadVideos(1, null, 'OR', resolution, currentFileType, currentDateFrom, currentDateTo);
 }
 
 // Detect video resolution
@@ -381,7 +388,7 @@ function displayStems(stems) {
 }
 
 // Load videos with pagination and filtering
-async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null, fileType = null) {
+async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null, fileType = null, dateFrom = null, dateTo = null) {
     try {
         const params = new URLSearchParams({
             page: page,
@@ -401,18 +408,28 @@ async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null,
             params.append('fileType', fileType);
         }
         
-        const response = await fetch(`/api/videos?${params}`);
+        if (dateFrom) {
+            params.append('dateFrom', dateFrom);
+        }
+        
+        if (dateTo) {
+            params.append('dateTo', dateTo);
+        }
+        
+        const response = await fetch(`/api/videos?${params.toString()}`);
         const data = await response.json();
         
         displayVideos(data.videos);
         displayPagination(data.pagination);
-        updateFilterInfo(stem, data.pagination.totalVideos, mode, resolution, fileType);
+        updateFilterInfo(stem, data.pagination.totalVideos, mode, resolution, fileType, dateFrom, dateTo);
         
         currentPage = page;
         currentStem = stem;
         currentResolution = resolution;
         currentFileType = fileType;
         currentFilterMode = mode;
+        currentDateFrom = dateFrom;
+        currentDateTo = dateTo;
     } catch (error) {
         console.error('Error loading videos:', error);
         document.getElementById('videosGrid').innerHTML = 
@@ -442,10 +459,8 @@ function displayVideos(videos) {
         if (isPDF) {
             overlayIcon = '📄';
             overlayClass = 'pdf-overlay';
-        } else if (isImage) {
-            overlayIcon = '🖼️';
-            overlayClass = 'image-overlay';
         }
+        // Removed image overlay - images don't show icon on hover
         
         const videoFilename = encodeURIComponent(video.filename);
         const videoUrl = `/api/video/${videoFilename}`;
@@ -461,7 +476,7 @@ function displayVideos(videos) {
             <div class="video-thumbnail">
                 <img src="${escapeHtml(video.thumbnailPath)}" alt="${escapeHtml(video.displayName)}" 
                      onerror="this.style.display='none'; this.parentElement.classList.add('no-thumbnail');">
-                <div class="${overlayClass}">${overlayIcon}</div>
+                ${!isImage ? `<div class="${overlayClass}">${overlayIcon}</div>` : ''}
                 ${video.resolution && video.resolution !== 'Unknown' ? `<div class="video-resolution-badge">${video.resolution}</div>` : ''}
                 ${isPDF ? '<div class="file-type-badge">PDF</div>' : ''}
                 ${isImage ? '<div class="file-type-badge">Image</div>' : ''}
@@ -470,6 +485,7 @@ function displayVideos(videos) {
             <div class="video-info">
                 <div class="video-title">${escapeHtml(video.displayName)}</div>
                 ${video.resolution && video.resolution !== 'Unknown' ? `<div class="video-resolution-text">${video.resolution}</div>` : ''}
+                ${video.date ? `<div class="video-date ${video.dateSource === 'metadata' ? 'date-from-metadata' : 'date-from-file'}">${formatVideoDate(video.date)}</div>` : ''}
                 <div class="video-stems">
                     ${video.stems.map(stem => 
                         `<span class="video-stem">${escapeHtml(stem)}</span>`
@@ -508,7 +524,7 @@ function displayPagination(pagination) {
 }
 
 // Update filter info display
-function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fileType = null) {
+function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fileType = null, dateFrom = null, dateTo = null) {
     const filterInfo = document.getElementById('filterInfo');
     
     const filters = [];
@@ -524,6 +540,18 @@ function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fil
     
     if (resolution) {
         filters.push(`Resolution: <strong>${escapeHtml(resolution)}</strong>`);
+    }
+    
+    if (dateFrom || dateTo) {
+        let dateDisplay = 'Date: ';
+        if (dateFrom && dateTo) {
+            dateDisplay += `<strong>${formatDate(dateFrom)} - ${formatDate(dateTo)}</strong>`;
+        } else if (dateFrom) {
+            dateDisplay += `<strong>From ${formatDate(dateFrom)}</strong>`;
+        } else if (dateTo) {
+            dateDisplay += `<strong>Until ${formatDate(dateTo)}</strong>`;
+        }
+        filters.push(dateDisplay);
     }
     
     if (stem) {
@@ -587,11 +615,16 @@ function clearFilter() {
     currentResolution = null;
     currentFileType = null;
     currentFilterMode = 'OR';
+    currentDateFrom = null;
+    currentDateTo = null;
     
     // Reset file type button to "All"
     document.querySelectorAll('.file-type-tag').forEach(btn => {
         btn.classList.remove('active');
     });
+    
+    // Reset date filter
+    filterByDate('all');
     const allButton = document.getElementById('fileType-all');
     if (allButton) {
         allButton.classList.add('active');
@@ -603,7 +636,7 @@ function clearFilter() {
 
 // Go to specific page
 function goToPage(page) {
-    loadVideos(page, currentStem, currentFilterMode, currentResolution, currentFileType);
+    loadVideos(page, currentStem, currentFilterMode, currentResolution, currentFileType, currentDateFrom, currentDateTo);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -913,5 +946,521 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Date filter functions
+async function loadDateRange() {
+    try {
+        const response = await fetch('/api/date-range');
+        const data = await response.json();
+        dateRange = data;
+    } catch (error) {
+        console.error('Error loading date range:', error);
+    }
+}
+
+async function loadDateCounts() {
+    try {
+        const response = await fetch('/api/date-counts');
+        const data = await response.json();
+        if (data.dateCounts) {
+            dateCounts = data.dateCounts;
+            buildDateTree();
+        }
+    } catch (error) {
+        console.error('Error loading date counts:', error);
+    }
+}
+
+// Build hierarchical date tree from date counts
+function buildDateTree() {
+    const dateTreeContainer = document.getElementById('dateTree');
+    if (!dateTreeContainer) return;
+    
+    if (Object.keys(dateCounts).length === 0) {
+        dateTreeContainer.innerHTML = '<p class="no-data">No date data available</p>';
+        return;
+    }
+    
+    // Organize dates into year > month > day structure
+    const tree = {};
+    
+    for (const [dateStr, count] of Object.entries(dateCounts)) {
+        const date = new Date(dateStr + 'T00:00:00');
+        const year = date.getFullYear();
+        const month = date.getMonth(); // 0-11
+        const day = date.getDate();
+        
+        if (!tree[year]) {
+            tree[year] = {};
+        }
+        if (!tree[year][month]) {
+            tree[year][month] = {};
+        }
+        tree[year][month][day] = count;
+    }
+    
+    // Calculate totals for months and years
+    const monthTotals = {};
+    const yearTotals = {};
+    
+    for (const [year, months] of Object.entries(tree)) {
+        yearTotals[year] = 0;
+        for (const [month, days] of Object.entries(months)) {
+            const monthKey = `${year}-${month}`;
+            monthTotals[monthKey] = 0;
+            for (const [day, count] of Object.entries(days)) {
+                monthTotals[monthKey] += count;
+                yearTotals[year] += count;
+            }
+        }
+    }
+    
+    // Sort years descending (newest first)
+    const sortedYears = Object.keys(tree).sort((a, b) => parseInt(b) - parseInt(a));
+    
+    // Month names
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                       'July', 'August', 'September', 'October', 'November', 'December'];
+    
+    let html = '<ul class="date-tree-list">';
+    
+    for (const year of sortedYears) {
+        const yearCount = yearTotals[year];
+        html += `<li class="date-tree-year">
+            <span class="date-tree-toggle" onclick="toggleDateTreeItem(this, event)">▶</span>
+            <span class="date-tree-label" onclick="toggleOrFilterDateTree(this, '${year}', null, null, event)">${year}</span>
+            <span class="date-tree-count">(${yearCount})</span>
+        </li>`;
+        
+        // Sort months descending (newest first)
+        const sortedMonths = Object.keys(tree[year]).sort((a, b) => parseInt(b) - parseInt(a));
+        
+        html += '<ul class="date-tree-month-list" style="display: none;">';
+        for (const month of sortedMonths) {
+            const monthKey = `${year}-${month}`;
+            const monthCount = monthTotals[monthKey];
+            const monthName = monthNames[parseInt(month)];
+            html += `<li class="date-tree-month">
+                <span class="date-tree-toggle" onclick="toggleDateTreeItem(this, event)">▶</span>
+                <span class="date-tree-label" onclick="toggleOrFilterDateTree(this, '${year}', '${month}', null, event)">${monthName}</span>
+                <span class="date-tree-count">(${monthCount})</span>
+            </li>`;
+            
+            // Sort days descending (newest first)
+            const sortedDays = Object.keys(tree[year][month]).sort((a, b) => parseInt(b) - parseInt(a));
+            
+            html += '<ul class="date-tree-day-list" style="display: none;">';
+            for (const day of sortedDays) {
+                const dayCount = tree[year][month][day];
+                html += `<li class="date-tree-day">
+                    <span class="date-tree-label" onclick="filterByDateTree('${year}', '${month}', '${day}')">${day}</span>
+                    <span class="date-tree-count">(${dayCount})</span>
+                </li>`;
+            }
+            html += '</ul>';
+        }
+        html += '</ul>';
+    }
+    
+    html += '</ul>';
+    dateTreeContainer.innerHTML = html;
+}
+
+// Toggle date tree item (expand/collapse)
+function toggleDateTreeItem(element, event) {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    
+    const listItem = element.closest('li');
+    if (!listItem) {
+        return;
+    }
+    
+    // The nested list is the next sibling UL element (not a child)
+    let nestedList = listItem.nextElementSibling;
+    
+    // Make sure it's a UL element
+    if (!nestedList || nestedList.tagName !== 'UL') {
+        // Fallback: try to find it as a child (shouldn't happen with our structure)
+        nestedList = listItem.querySelector('ul');
+    }
+    
+    if (nestedList) {
+        // Check if currently expanded by looking at inline style first, then computed style
+        const inlineDisplay = nestedList.style.display;
+        const computedDisplay = window.getComputedStyle(nestedList).display;
+        const currentDisplay = inlineDisplay || computedDisplay;
+        const isExpanded = currentDisplay !== 'none' && currentDisplay !== '';
+        
+        if (isExpanded) {
+            // Collapse
+            nestedList.style.display = 'none';
+            element.textContent = '▶';
+        } else {
+            // Expand
+            nestedList.style.display = 'block';
+            element.textContent = '▼';
+        }
+    }
+}
+
+// Toggle date tree item and optionally filter
+function toggleOrFilterDateTree(element, year, month, day, event) {
+    if (event) {
+        event.stopPropagation();
+    }
+    
+    const listItem = element.closest('li');
+    if (!listItem) {
+        return;
+    }
+    
+    // The nested list is the next sibling UL element (not a child)
+    let nestedList = listItem.nextElementSibling;
+    
+    // Make sure it's a UL element
+    if (!nestedList || nestedList.tagName !== 'UL') {
+        // Fallback: try to find it as a child (shouldn't happen with our structure)
+        nestedList = listItem.querySelector('ul');
+    }
+    
+    const toggle = listItem.querySelector('.date-tree-toggle');
+    
+    if (nestedList) {
+        // Check if currently expanded by looking at inline style first, then computed style
+        const inlineDisplay = nestedList.style.display;
+        const computedDisplay = window.getComputedStyle(nestedList).display;
+        const currentDisplay = inlineDisplay || computedDisplay;
+        const isExpanded = currentDisplay !== 'none' && currentDisplay !== '';
+        
+        if (!isExpanded) {
+            // Expand first
+            nestedList.style.display = 'block';
+            if (toggle) {
+                toggle.textContent = '▼';
+            }
+        } else {
+            // Already expanded, so filter
+            filterByDateTree(year, month, day);
+        }
+    } else {
+        // No nested list (day level), just filter
+        filterByDateTree(year, month, day);
+    }
+}
+
+// Filter by date tree selection
+function filterByDateTree(year, month, day) {
+    let dateFrom = null;
+    let dateTo = null;
+    
+    if (day !== null && month !== null) {
+        // Specific day selected
+        const date = new Date(parseInt(year), parseInt(month), parseInt(day));
+        dateFrom = date.toISOString().split('T')[0] + 'T00:00:00.000Z';
+        dateTo = date.toISOString().split('T')[0] + 'T23:59:59.999Z';
+    } else if (month !== null) {
+        // Month selected
+        const startDate = new Date(parseInt(year), parseInt(month), 1);
+        const endDate = new Date(parseInt(year), parseInt(month) + 1, 0); // Last day of month
+        dateFrom = startDate.toISOString().split('T')[0] + 'T00:00:00.000Z';
+        dateTo = endDate.toISOString().split('T')[0] + 'T23:59:59.999Z';
+    } else if (year !== null) {
+        // Year selected
+        const startDate = new Date(parseInt(year), 0, 1);
+        const endDate = new Date(parseInt(year), 11, 31);
+        dateFrom = startDate.toISOString().split('T')[0] + 'T00:00:00.000Z';
+        dateTo = endDate.toISOString().split('T')[0] + 'T23:59:59.999Z';
+    }
+    
+    currentDateFrom = dateFrom;
+    currentDateTo = dateTo;
+    currentPage = 1;
+    
+    // Update button states
+    document.querySelectorAll('.date-filter-tag').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    const customButton = document.getElementById('dateFilter-custom');
+    if (customButton) {
+        customButton.classList.add('active');
+    }
+    
+    // Clear date picker if it exists
+    if (dateRangePicker) {
+        dateRangePicker.clear();
+    }
+    
+    // Load videos with date filter
+    loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, dateFrom, dateTo);
+}
+
+function filterByDate(filterType) {
+    if (filterType === 'all') {
+        currentDateFrom = null;
+        currentDateTo = null;
+        currentPage = 1;
+        
+        // Update button states
+        document.querySelectorAll('.date-filter-tag').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        const allButton = document.getElementById('dateFilter-all');
+        if (allButton) {
+            allButton.classList.add('active');
+        }
+        
+        // Hide date inputs
+        const dateInputs = document.getElementById('dateRangeInputs');
+        if (dateInputs) {
+            dateInputs.style.display = 'none';
+        }
+        
+        // Clear date picker
+        if (dateRangePicker) {
+            dateRangePicker.clear();
+        }
+        
+        loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, null, null);
+    } else if (filterType === 'custom') {
+        // Show date inputs
+        const dateInputs = document.getElementById('dateRangeInputs');
+        if (dateInputs) {
+            dateInputs.style.display = 'block';
+        }
+        
+        // Update button states
+        document.querySelectorAll('.date-filter-tag').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        const customButton = document.getElementById('dateFilter-custom');
+        if (customButton) {
+            customButton.classList.add('active');
+        }
+        
+        // Initialize date range picker after a short delay to ensure element is visible
+        setTimeout(() => {
+            initializeDateRangePicker();
+        }, 50);
+    }
+}
+
+function showDateRangeInputs() {
+    filterByDate('custom');
+}
+
+function initializeDateRangePicker() {
+    const pickerElement = document.getElementById('dateRangePicker');
+    if (!pickerElement) {
+        console.error('Date range picker element not found');
+        return;
+    }
+    
+    // Destroy existing instance if it exists
+    if (dateRangePicker) {
+        dateRangePicker.destroy();
+        dateRangePicker = null;
+    }
+    
+    // Check if flatpickr is available
+    if (typeof flatpickr === 'undefined') {
+        console.error('Flatpickr library not loaded. Please ensure the script is included in index.html');
+        alert('Date picker library not loaded. Please refresh the page.');
+        return;
+    }
+    
+    const options = {
+        mode: 'range',
+        dateFormat: 'Y-m-d',
+        minDate: dateRange.minDate ? new Date(dateRange.minDate) : undefined,
+        maxDate: dateRange.maxDate ? new Date(dateRange.maxDate) : undefined,
+        allowInput: false,
+        clickOpens: true,
+        onChange: function(selectedDates, dateStr, instance) {
+            // Automatically apply filter when dates are selected
+            if (selectedDates.length === 2) {
+                // Range selected - apply filter
+                const start = selectedDates[0] < selectedDates[1] ? selectedDates[0] : selectedDates[1];
+                const end = selectedDates[0] > selectedDates[1] ? selectedDates[0] : selectedDates[1];
+                const dateFrom = start.toISOString().split('T')[0] + 'T00:00:00.000Z';
+                const dateTo = end.toISOString().split('T')[0] + 'T23:59:59.999Z';
+                
+                currentDateFrom = dateFrom;
+                currentDateTo = dateTo;
+                currentPage = 1;
+                
+                // Update button states
+                document.querySelectorAll('.date-filter-tag').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+                const customButton = document.getElementById('dateFilter-custom');
+                if (customButton) {
+                    customButton.classList.add('active');
+                }
+                
+                // Load videos with date filter
+                loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, dateFrom, dateTo);
+            } else if (selectedDates.length === 1) {
+                // Single date selected - use as both start and end
+                const date = selectedDates[0];
+                const dateFrom = date.toISOString().split('T')[0] + 'T00:00:00.000Z';
+                const dateTo = date.toISOString().split('T')[0] + 'T23:59:59.999Z';
+                
+                currentDateFrom = dateFrom;
+                currentDateTo = dateTo;
+                currentPage = 1;
+                
+                // Update button states
+                document.querySelectorAll('.date-filter-tag').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+                const customButton = document.getElementById('dateFilter-custom');
+                if (customButton) {
+                    customButton.classList.add('active');
+                }
+                
+                // Load videos with date filter
+                loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, dateFrom, dateTo);
+            } else if (selectedDates.length === 0) {
+                // Dates cleared - clear filter
+                clearDateFilter();
+            }
+        },
+        onReady: function(selectedDates, dateStr, instance) {
+            // Customize day cells to show file counts
+            setTimeout(() => {
+                updateDatePickerDayCounts(instance);
+            }, 100);
+        },
+        onOpen: function(selectedDates, dateStr, instance) {
+            // Update counts when calendar opens
+            setTimeout(() => {
+                updateDatePickerDayCounts(instance);
+            }, 100);
+        },
+        onMonthChange: function(selectedDates, dateStr, instance) {
+            // Update counts when month changes
+            setTimeout(() => {
+                updateDatePickerDayCounts(instance);
+            }, 100);
+        },
+        onYearChange: function(selectedDates, dateStr, instance) {
+            // Update counts when year changes
+            setTimeout(() => {
+                updateDatePickerDayCounts(instance);
+            }, 100);
+        }
+    };
+    
+    try {
+        dateRangePicker = flatpickr(pickerElement, options);
+        console.log('Date range picker initialized');
+    } catch (error) {
+        console.error('Error initializing date range picker:', error);
+    }
+}
+
+function updateDatePickerDayCounts(instance) {
+    if (!instance || !instance.calendarContainer) return;
+    
+    const dayElements = instance.calendarContainer.querySelectorAll('.flatpickr-day:not(.flatpickr-disabled)');
+    const currentMonth = instance.currentMonth;
+    const currentYear = instance.currentYear;
+    
+    dayElements.forEach(dayElement => {
+        const dayNum = parseInt(dayElement.textContent);
+        if (isNaN(dayNum)) return;
+        
+        // Construct date from current month/year and day
+        const date = new Date(currentYear, currentMonth, dayNum);
+        const dateKey = date.toISOString().split('T')[0]; // YYYY-MM-DD
+        const count = dateCounts[dateKey] || 0;
+        
+        // Remove existing count badge
+        const existingBadge = dayElement.querySelector('.date-count-badge');
+        if (existingBadge) {
+            existingBadge.remove();
+        }
+        
+        // Remove has-files class
+        dayElement.classList.remove('has-files');
+        
+        // Add count badge if there are files on this date
+        if (count > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'date-count-badge';
+            badge.textContent = count;
+            badge.title = `${count} file${count !== 1 ? 's' : ''} on this date`;
+            dayElement.appendChild(badge);
+            
+            // Add class to indicate files exist
+            dayElement.classList.add('has-files');
+        }
+    });
+}
+
+function applyDateFilter() {
+    if (!dateRangePicker) {
+        alert('Please select a date range first');
+        return;
+    }
+    
+    const selectedDates = dateRangePicker.selectedDates;
+    
+    if (selectedDates.length === 0) {
+        alert('Please select a date range');
+        return;
+    }
+    
+    let dateFrom = null;
+    let dateTo = null;
+    
+    if (selectedDates.length === 1) {
+        // Single date selected - use as both start and end
+        const date = selectedDates[0];
+        dateFrom = date.toISOString().split('T')[0] + 'T00:00:00.000Z';
+        dateTo = date.toISOString().split('T')[0] + 'T23:59:59.999Z';
+    } else if (selectedDates.length === 2) {
+        // Range selected
+        const start = selectedDates[0] < selectedDates[1] ? selectedDates[0] : selectedDates[1];
+        const end = selectedDates[0] > selectedDates[1] ? selectedDates[0] : selectedDates[1];
+        dateFrom = start.toISOString().split('T')[0] + 'T00:00:00.000Z';
+        dateTo = end.toISOString().split('T')[0] + 'T23:59:59.999Z';
+    }
+    
+    currentDateFrom = dateFrom;
+    currentDateTo = dateTo;
+    currentPage = 1;
+    
+    loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, dateFrom, dateTo);
+}
+
+function clearDateFilter() {
+    if (dateRangePicker) {
+        dateRangePicker.clear();
+    }
+    
+    filterByDate('all');
+}
+
+function formatDate(dateString) {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function formatVideoDate(dateString) {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
 }
 

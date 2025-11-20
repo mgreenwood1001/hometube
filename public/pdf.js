@@ -282,6 +282,54 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Suppress Firefox PDF.js warnings (harmless console errors)
+window.addEventListener('error', function(event) {
+    const message = event.message || '';
+    
+    // Suppress the known Firefox PDF.js "actor ID" warning
+    if (message.includes("Can't find the actor ID for objects-manager")) {
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+    }
+    
+    // Suppress mimetype parsing warnings
+    if (message.includes("Couldn't not parse mimetype") || 
+        message.includes("Couldn't parse mimetype")) {
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+    }
+}, true);
+
+// Also catch unhandled promise rejections that might contain these errors
+window.addEventListener('unhandledrejection', function(event) {
+    if (event.reason) {
+        const message = (event.reason.message || event.reason.toString() || '').toString();
+        
+        if (message.includes("Can't find the actor ID for objects-manager") ||
+            message.includes("Couldn't not parse mimetype") ||
+            message.includes("Couldn't parse mimetype")) {
+            event.preventDefault();
+            return false;
+        }
+    }
+});
+
+// Override console.warn to filter out PDF.js mimetype warnings
+const originalWarn = console.warn;
+console.warn = function(...args) {
+    const message = args.join(' ');
+    if (message.includes("Couldn't not parse mimetype") ||
+        message.includes("Couldn't parse mimetype") ||
+        message.includes("Can't find the actor ID for objects-manager")) {
+        // Suppress these warnings
+        return;
+    }
+    // Call original warn for other messages
+    originalWarn.apply(console, args);
+};
+
 // Initialize page
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', loadPdfPage);

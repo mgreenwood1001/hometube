@@ -391,9 +391,228 @@ body {
 }
 
 .video-card:hover .play-overlay,
-.video-card:hover .pdf-overlay,
-.video-card:hover .image-overlay {
+.video-card:hover .pdf-overlay {
     opacity: 0.9;
+}
+
+/* Date filter styles */
+.date-filter {
+    margin-bottom: 1rem;
+}
+
+.date-filter-tag {
+    width: 100%;
+    margin-bottom: 0.5rem;
+    text-align: center;
+}
+
+.date-range-inputs {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background-color: #1a1a1a;
+    border-radius: 4px;
+}
+
+/* Date Tree Styles */
+.date-tree {
+    margin-top: 0.5rem;
+    max-height: 600px;
+    overflow-y: auto;
+    font-size: 0.9rem;
+}
+
+.date-tree-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.date-tree-list ul {
+    list-style: none;
+    padding-left: 1.2rem;
+    margin: 0.2rem 0;
+    display: none;
+}
+
+.date-tree-year,
+.date-tree-month,
+.date-tree-day {
+    padding: 0.3rem 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.date-tree-year:hover,
+.date-tree-month:hover,
+.date-tree-day:hover {
+    background-color: #2a2a2a;
+    border-radius: 4px;
+}
+
+.date-tree-toggle {
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.7rem;
+    color: #aaaaaa;
+    width: 1rem;
+    text-align: center;
+}
+
+.date-tree-toggle:hover {
+    color: #ffffff;
+}
+
+.date-tree-label {
+    flex: 1;
+    cursor: pointer;
+    color: #e0e0e0;
+}
+
+.date-tree-label:hover {
+    color: #ffffff;
+    text-decoration: underline;
+}
+
+.date-tree-count {
+    color: #888888;
+    font-size: 0.85rem;
+}
+
+.date-tree-year .date-tree-label {
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.date-tree-month .date-tree-label {
+    font-weight: 500;
+    color: #d0d0d0;
+}
+
+.date-tree-day .date-tree-label {
+    color: #c0c0c0;
+}
+
+.date-tree .loading,
+.date-tree .no-data {
+    color: #888888;
+    font-style: italic;
+    padding: 0.5rem;
+}
+
+.date-range-inputs label {
+    display: block;
+    font-size: 0.85rem;
+    color: #aaaaaa;
+    margin-bottom: 0.25rem;
+}
+
+.date-range-inputs input[type="text"],
+.date-range-inputs input[type="date"],
+.date-range-inputs #dateRangePicker {
+    width: 100%;
+    padding: 0.5rem;
+    background-color: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #ffffff;
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    cursor: pointer;
+}
+
+.date-range-inputs input[type="text"]:focus,
+.date-range-inputs input[type="date"]:focus {
+    outline: none;
+    border-color: #dc2626;
+}
+
+/* Flatpickr customization */
+.flatpickr-calendar {
+    background-color: #1a1a1a !important;
+    border: 1px solid #444 !important;
+    color: #ffffff !important;
+}
+
+.flatpickr-months {
+    background-color: #2a2a2a !important;
+}
+
+.flatpickr-month {
+    color: #ffffff !important;
+}
+
+.flatpickr-weekday {
+    color: #aaaaaa !important;
+}
+
+.flatpickr-day {
+    color: #ffffff !important;
+}
+
+.flatpickr-day:hover {
+    background-color: #3ea6ff !important;
+    border-color: #3ea6ff !important;
+}
+
+.flatpickr-day.selected,
+.flatpickr-day.startRange,
+.flatpickr-day.endRange {
+    background-color: #dc2626 !important;
+    border-color: #dc2626 !important;
+}
+
+.flatpickr-day.inRange {
+    background-color: rgba(220, 38, 38, 0.2) !important;
+}
+
+.flatpickr-day.has-files {
+    font-weight: bold;
+}
+
+.date-count-badge {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    background-color: #3ea6ff;
+    color: #ffffff;
+    font-size: 0.6rem;
+    padding: 1px 3px;
+    border-radius: 3px;
+    font-weight: bold;
+    line-height: 1;
+}
+
+.flatpickr-day {
+    position: relative;
+}
+
+.date-apply-button,
+.date-clear-button {
+    width: 100%;
+    padding: 0.5rem;
+    margin-top: 0.5rem;
+    background-color: #dc2626;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background-color 0.2s;
+}
+
+.date-apply-button:hover {
+    background-color: #b91c1c;
+}
+
+.date-clear-button {
+    background-color: #444;
+    margin-top: 0.25rem;
+}
+
+.date-clear-button:hover {
+    background-color: #555;
 }
 
 .file-type-badge {
@@ -427,6 +646,20 @@ body {
     font-size: 0.85rem;
     margin-top: 0.25rem;
     font-weight: 500;
+}
+
+.video-date {
+    font-size: 0.75rem;
+    margin-top: 0.25rem;
+    font-weight: 500;
+}
+
+.video-date.date-from-metadata {
+    color: #3ea6ff; /* Blue for metadata dates (EXIF) */
+}
+
+.video-date.date-from-file {
+    color: #888; /* Gray for file modification dates */
 }
 
 .video-info {
