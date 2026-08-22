@@ -44,6 +44,7 @@
     "package.json"
   ],
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "cookie-parser": "^1.4.6",
     "express": "^4.18.2",
     "express-session": "^1.17.3",
@@ -53,8 +54,8 @@
   "optionalDependencies": {
     "@tensorflow/tfjs-node": "^4.22.0",
     "canvas": "^2.11.2",
+    "exif-reader": "^1.0.0",
     "face-api.js": "^0.22.2",
-    "sharp": "^0.33.5",
-    "exif-reader": "^1.0.0"
+    "sharp": "^0.33.5"
   }
 }

@@ -3,216 +3,134 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title id="pageTitle">Login - HomeTube</title>
+    <title id="pageTitle">Login - Movie Tube</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg: #0b0c10;
+            --surface: #181b22;
+            --border: rgba(255,255,255,0.08);
+            --text: #f3f4f7;
+            --muted: #8d93a3;
+            --accent: #f0b429;
         }
-        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background-color: #0f0f0f;
-            color: #ffffff;
+            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+            color: var(--text);
             display: flex;
             align-items: center;
             justify-content: center;
-            min-height: 100vh;
             padding: 2rem;
+            background:
+                radial-gradient(900px 420px at 15% -10%, rgba(240,180,41,0.16), transparent 50%),
+                radial-gradient(700px 380px at 110% 10%, rgba(94,200,192,0.1), transparent 45%),
+                var(--bg);
         }
-        
         .login-container {
-            background-color: #181818;
-            padding: 3rem;
-            border-radius: 8px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
             width: 100%;
             max-width: 400px;
+            background: rgba(18,20,26,0.92);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 2.4rem 2rem;
+            box-shadow: 0 24px 80px rgba(0,0,0,0.45);
         }
-        
-        .login-header {
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-        
-        .login-header h1 {
-            font-size: 2rem;
-            color: #ff0000;
-            margin-bottom: 0.5rem;
-        }
-        
-        .login-header p {
-            color: #aaaaaa;
-            font-size: 0.9rem;
-        }
-        
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        
-        .form-group label {
+        .login-header { text-align: center; margin-bottom: 1.8rem; }
+        .login-logo {
+            width: 180px;
+            height: auto;
             display: block;
-            margin-bottom: 0.5rem;
-            color: #ffffff;
-            font-size: 0.9rem;
+            margin: 0 auto 0.9rem;
+            border-radius: 12px;
         }
-        
+        .login-header h1 { font-size: 1.6rem; letter-spacing: -0.03em; }
+        .login-header p { color: var(--muted); margin-top: 0.35rem; }
+        .form-group { margin-bottom: 1.1rem; }
+        .form-group label { display: block; margin-bottom: 0.4rem; font-size: 0.88rem; color: var(--muted); }
         .form-group input {
-            width: 100%;
-            padding: 0.75rem;
-            background-color: #121212;
-            border: 1px solid #303030;
-            border-radius: 4px;
-            color: #ffffff;
-            font-size: 1rem;
-            outline: none;
-            transition: border-color 0.2s;
+            width: 100%; padding: 0.75rem 0.9rem; background: #0f1116;
+            border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 1rem;
         }
-        
-        .form-group input:focus {
-            border-color: #3ea6ff;
-        }
-        
+        .form-group input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(240,180,41,0.16); }
         .error-message {
-            background-color: #ff4444;
-            color: #ffffff;
-            padding: 0.75rem;
-            border-radius: 4px;
-            margin-bottom: 1rem;
-            display: none;
-            font-size: 0.9rem;
+            background: rgba(239,107,107,0.15); color: #ffb4b4; padding: 0.7rem 0.8rem;
+            border-radius: 10px; margin-bottom: 1rem; display: none; font-size: 0.9rem;
         }
-        
-        .error-message.show {
-            display: block;
-        }
-        
+        .error-message.show { display: block; }
         .login-button {
-            width: 100%;
-            padding: 0.75rem;
-            background-color: #3ea6ff;
-            border: none;
-            border-radius: 4px;
-            color: #ffffff;
-            font-size: 1rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background-color 0.2s;
+            width: 100%; padding: 0.8rem; background: var(--accent); border: none; border-radius: 12px;
+            color: #1a1406; font-size: 1rem; font-weight: 700; cursor: pointer;
         }
-        
-        .login-button:hover {
-            background-color: #2d8cd6;
-        }
-        
-        .login-button:disabled {
-            background-color: #303030;
-            cursor: not-allowed;
-            opacity: 0.6;
-        }
+        .login-button:hover { filter: brightness(1.08); }
+        .login-button:disabled { opacity: 0.55; cursor: not-allowed; }
     </style>
 </head>
 <body>
     <div class="login-container">
         <div class="login-header">
-            <div style="display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 0.5rem;">
-                <img src="/images/logo.png" alt="HomeTube" id="logoAlt" style="height: 2rem; width: auto;">
-                <h1 id="systemName" style="margin: 0;">HomeTube</h1>
-            </div>
-            <p>Please login to continue</p>
+            <img src="/images/logo.png" alt="Movie Tube" class="login-logo">
+            <span id="systemName" hidden>Movie Tube</span>
+            <p>Sign in to browse your library</p>
         </div>
-        
         <div id="errorMessage" class="error-message"></div>
-        
         <form id="loginForm">
             <div class="form-group">
                 <label for="username">Username</label>
                 <input type="text" id="username" name="username" required autofocus>
             </div>
-            
             <div class="form-group">
                 <label for="password">Password</label>
                 <input type="password" id="password" name="password" required>
             </div>
-            
-            <button type="submit" class="login-button" id="loginButton">Login</button>
+            <button type="submit" class="login-button" id="loginButton">Continue</button>
         </form>
     </div>
-    
     <script>
         const loginForm = document.getElementById('loginForm');
         const errorMessage = document.getElementById('errorMessage');
         const loginButton = document.getElementById('loginButton');
-        
-        function showError(message) {
-            errorMessage.textContent = message;
-            errorMessage.classList.add('show');
-        }
-        
-        function hideError() {
-            errorMessage.classList.remove('show');
-        }
-        
+
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            hideError();
-            
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            
+            errorMessage.classList.remove('show');
             loginButton.disabled = true;
-            loginButton.textContent = 'Logging in...';
-            
+            loginButton.textContent = 'Signing in...';
             try {
                 const response = await fetch('/api/login', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ username, password })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('username').value,
+                        password: document.getElementById('password').value
+                    })
                 });
-                
                 const data = await response.json();
-                
                 if (response.ok && data.success) {
-                    // Redirect to home page
                     window.location.href = '/';
                 } else {
-                    showError(data.error || 'Invalid username or password');
+                    errorMessage.textContent = data.error || 'Invalid username or password';
+                    errorMessage.classList.add('show');
                     loginButton.disabled = false;
-                    loginButton.textContent = 'Login';
+                    loginButton.textContent = 'Continue';
                 }
             } catch (error) {
-                showError('Error connecting to server');
+                errorMessage.textContent = 'Could not reach the server';
+                errorMessage.classList.add('show');
                 loginButton.disabled = false;
-                loginButton.textContent = 'Login';
+                loginButton.textContent = 'Continue';
             }
         });
-        
-        // Check if already authenticated
-        fetch('/api/auth/status')
-            .then(res => res.json())
-            .then(data => {
-                if (data.authenticated) {
-                    window.location.href = '/';
-                }
-            })
-            .catch(() => {
-                // Ignore errors
-            });
-    </script>
-    <script>
-        // Load system configuration
-        fetch('/api/config')
-            .then(response => response.json())
-            .then(config => {
-                const systemName = config.systemName || 'HomeTube';
-                document.getElementById('systemName').textContent = systemName;
-                document.getElementById('logoAlt').alt = systemName;
-                document.getElementById('pageTitle').textContent = `Login - ${systemName}`;
-            })
-            .catch(error => console.error('Error loading config:', error));
+
+        fetch('/api/auth/status').then(res => res.json()).then(data => {
+            if (data.authenticated) window.location.href = '/';
+        }).catch(() => {});
+
+        fetch('/api/config').then(res => res.json()).then(config => {
+            const systemName = config.systemName || 'Movie Tube';
+            document.getElementById('systemName').textContent = systemName;
+            document.getElementById('pageTitle').textContent = `Login - ${systemName}`;
+        }).catch(() => {});
     </script>
 </body>
 </html>
-

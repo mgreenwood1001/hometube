@@ -25,7 +25,7 @@ function initVideoPlayer() {
         videoPlayer = videojs(videoElement, {
             controls: true,
             autoplay: false,
-            preload: 'auto',
+            preload: 'metadata',
             fluid: true,
             responsive: true,
             playbackRates: [0.5, 1, 1.25, 1.5, 2],
@@ -46,8 +46,38 @@ function initVideoPlayer() {
                 console.error('Video.js player error:', error);
             }
         });
+        addVideoJsFavoriteButton(videoPlayer);
     }
     return videoPlayer;
+}
+
+function addVideoJsFavoriteButton(player) {
+    player.ready(() => {
+        const bar = player.el().querySelector('.vjs-control-bar');
+        if (!bar || bar.querySelector('.vjs-favorite-button')) return;
+        const btn = document.createElement('button');
+        btn.className = 'vjs-favorite-button vjs-control vjs-button favorite-btn';
+        btn.type = 'button';
+        btn.title = 'Add to favorites';
+        btn.innerHTML = typeof favoriteIconSvg === 'function' ? favoriteIconSvg() : '♥';
+        btn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const main = document.getElementById('favoriteButton');
+            if (main) toggleFavorite(main);
+        });
+        const fullscreen = bar.querySelector('.vjs-fullscreen-control');
+        if (fullscreen) {
+            bar.insertBefore(btn, fullscreen);
+        } else {
+            bar.appendChild(btn);
+        }
+        const main = document.getElementById('favoriteButton');
+        if (main && main.getAttribute('data-filename')) {
+            btn.setAttribute('data-filename', main.getAttribute('data-filename'));
+            applyFavoriteState(btn, main.classList.contains('is-favorite'));
+        }
+    });
 }
 
 // Get video MIME type from file extension
@@ -139,7 +169,7 @@ async function loadVideoPage() {
         }
         
         // Set page title (will be updated with system name from config)
-        const systemName = document.getElementById('systemName')?.textContent || 'HomeTube';
+        const systemName = document.getElementById('systemName')?.textContent || 'Movie Tube';
         document.title = `${video.displayName} - ${systemName}`;
         
         // Display video info first
@@ -147,6 +177,8 @@ async function loadVideoPage() {
         if (titleElement) {
             titleElement.textContent = video.displayName;
         }
+
+        bindFavoriteButton('favoriteButton', video.filename, video.favorited);
         
         // Set file type label
         const viewsElement = document.getElementById('videoViews');
@@ -206,6 +238,7 @@ async function loadVideoPage() {
                     src: video.fullPath
                 });
                 player.load();
+                addVideoJsFavoriteButton(player);
             } else {
                 console.error('Failed to initialize video player');
                 showError('Failed to initialize video player. Please refresh the page.');
@@ -264,13 +297,12 @@ function displayRelatedVideos(videos) {
         <div class="related-video-item" onclick="navigateToVideo('${encodeURIComponent(video.filename)}')">
             <div class="related-video-thumbnail">
                 <img src="${escapeHtml(video.thumbnailPath)}" alt="${escapeHtml(video.displayName)}"
+                     loading="lazy" decoding="async" width="148" height="84"
                      onerror="this.style.display='none'; this.parentElement.classList.add('no-thumbnail');">
-                <div class="play-overlay-small">▶</div>
             </div>
             <div class="related-video-info">
                 <div class="related-video-title">${escapeHtml(video.displayName)}</div>
-                <div class="related-video-channel">${document.getElementById('systemName')?.textContent || 'HomeTube'}</div>
-                <div class="related-video-meta">Related video</div>
+                <div class="related-video-meta">Related</div>
             </div>
         </div>
     `).join('');
@@ -279,7 +311,24 @@ function displayRelatedVideos(videos) {
 // Navigate to video page
 function navigateToVideo(filename) {
     const encodedFilename = encodeURIComponent(filename);
-    window.location.href = `/video/${encodedFilename}`;
+    window.open(`/video/${encodedFilename}`, '_blank');
+}
+
+function copyPageLink(button) {
+    const url = window.location.href;
+    const done = () => {
+        if (!button) return;
+        const original = button.textContent;
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = original; }, 1400);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(done).catch(() => {
+            window.prompt('Copy this link', url);
+        });
+    } else {
+        window.prompt('Copy this link', url);
+    }
 }
 
 // Search by stem

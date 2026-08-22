@@ -3,10 +3,12 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const natural = require('natural');
 const ffmpeg = require('fluent-ffmpeg');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
+const Database = require('better-sqlite3');
 
 // Sharp for image metadata extraction (optional)
 let sharp = null;
@@ -37,10 +39,88 @@ const THUMBNAILS_DIR = path.join(__dirname, 'thumbnails');
 const CREDENTIALS_FILE = path.join(__dirname, 'credentials.txt');
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 const DATE_CACHE_FILE = path.join(__dirname, 'date-cache.json');
+const HASH_CACHE_FILE = path.join(__dirname, 'hash-cache.json');
+const DB_FILE = path.join(__dirname, 'media.db');
 
 // Create thumbnails directory if it doesn't exist
 if (!fs.existsSync(THUMBNAILS_DIR)) {
   fs.mkdirSync(THUMBNAILS_DIR, { recursive: true });
+}
+
+// Initialize SQLite database
+let db = null;
+
+function initializeDatabase() {
+  console.log('Initializing database...');
+  db = new Database(DB_FILE);
+
+  // Enable WAL mode for better concurrent performance
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('cache_size = -16000'); // 16MB page cache
+  db.pragma('temp_store = MEMORY');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('foreign_keys = ON');
+
+  // Create tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename TEXT NOT NULL UNIQUE,
+      file_type TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      file_size INTEGER,
+      mtime INTEGER,
+      date TEXT,
+      date_source TEXT,
+      file_hash TEXT,
+      resolution TEXT,
+      has_thumbnail INTEGER DEFAULT 0,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_files_filename ON files(filename);
+    CREATE INDEX IF NOT EXISTS idx_files_file_type ON files(file_type);
+    CREATE INDEX IF NOT EXISTS idx_files_date ON files(date);
+    CREATE INDEX IF NOT EXISTS idx_files_resolution ON files(resolution);
+    CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash);
+
+    CREATE TABLE IF NOT EXISTS stems (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_id INTEGER NOT NULL,
+      stem TEXT NOT NULL,
+      FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_stems_file_id ON stems(file_id);
+    CREATE INDEX IF NOT EXISTS idx_stems_stem ON stems(stem);
+    CREATE INDEX IF NOT EXISTS idx_stems_stem_file ON stems(stem, file_id);
+    CREATE INDEX IF NOT EXISTS idx_files_type_date ON files(file_type, date);
+    CREATE INDEX IF NOT EXISTS idx_files_type_resolution ON files(file_type, resolution);
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      last_login INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS favorites (
+      user_id INTEGER NOT NULL,
+      file_id INTEGER NOT NULL,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      PRIMARY KEY (user_id, file_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
+    CREATE INDEX IF NOT EXISTS idx_favorites_file ON favorites(file_id);
+  `);
+
+  console.log('Database initialized successfully');
+  return db;
 }
 
 // Middleware setup
@@ -100,10 +180,58 @@ function verifyCredentials(username, password) {
   );
 }
 
+function getOrCreateUser(username) {
+  if (!db || !username) return null;
+  db.prepare(`
+    INSERT INTO users (username, last_login)
+    VALUES (?, strftime('%s', 'now'))
+    ON CONFLICT(username) DO UPDATE SET last_login = strftime('%s', 'now')
+  `).run(username);
+  return db.prepare('SELECT id, username, created_at, last_login FROM users WHERE username = ?').get(username);
+}
+
+function getSessionUser(req) {
+  if (!req.session || !req.session.authenticated || !req.session.username) {
+    return null;
+  }
+  if (req.session.userId) {
+    return { id: req.session.userId, username: req.session.username };
+  }
+  const user = getOrCreateUser(req.session.username);
+  if (user) {
+    req.session.userId = user.id;
+    return { id: user.id, username: user.username };
+  }
+  return null;
+}
+
+function getFavoriteCount(userId) {
+  if (!db || !userId) return 0;
+  const row = db.prepare('SELECT COUNT(*) AS count FROM favorites WHERE user_id = ?').get(userId);
+  return row ? row.count : 0;
+}
+
+function attachFavoriteFlags(items, userId) {
+  if (!items.length) return items;
+  if (!userId) {
+    return items.map(item => ({ ...item, favorited: false }));
+  }
+  const names = items.map(item => item.filename);
+  const placeholders = names.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT f.filename
+    FROM favorites fav
+    JOIN files f ON f.id = fav.file_id
+    WHERE fav.user_id = ? AND f.filename IN (${placeholders})
+  `).all(userId, ...names);
+  const favorited = new Set(rows.map(row => row.filename));
+  return items.map(item => ({ ...item, favorited: favorited.has(item.filename) }));
+}
+
 // Authentication middleware
 function requireAuth(req, res, next) {
   // Allow access to login page, login API, and config API without authentication
-  if (req.path === '/login' || req.path === '/api/login' || req.path === '/api/auth/status' || req.path === '/api/config') {
+  if (req.path === '/login' || req.path === '/api/login' || req.path === '/api/auth/status' || req.path === '/api/config' || req.path === '/images/logo.png') {
     return next();
   }
   
@@ -126,18 +254,22 @@ function loadConfig() {
       const content = fs.readFileSync(CONFIG_FILE, 'utf-8');
       const config = JSON.parse(content);
       
-      // Update BASE_PATH if specified in config
-      if (config.videoBasePath) {
+      // Update BASE_PATH if specified in config (support both old and new name for backward compatibility)
+      if (config.mediaConfigPath) {
+        BASE_PATH = config.mediaConfigPath;
+      } else if (config.videoBasePath) {
+        // Backward compatibility
         BASE_PATH = config.videoBasePath;
-        // Ensure it ends with a slash
-        if (!BASE_PATH.endsWith('/')) {
-          BASE_PATH += '/';
-        }
+      }
+      
+      // Ensure it ends with a slash
+      if (BASE_PATH && !BASE_PATH.endsWith('/')) {
+        BASE_PATH += '/';
       }
       
       return {
-        systemName: config.systemName || 'HomeTube',
-        videoBasePath: BASE_PATH
+        systemName: config.systemName || 'Movie Tube',
+        mediaConfigPath: BASE_PATH
       };
     }
   } catch (error) {
@@ -146,8 +278,8 @@ function loadConfig() {
   
   // Default values
   return {
-    systemName: 'HomeTube',
-    videoBasePath: BASE_PATH
+    systemName: 'Movie Tube',
+    mediaConfigPath: BASE_PATH
   };
 }
 
@@ -159,7 +291,7 @@ if (process.env.BASE_PATH) {
   if (!BASE_PATH.endsWith('/')) {
     BASE_PATH += '/';
   }
-  appConfig.videoBasePath = BASE_PATH;
+  appConfig.mediaConfigPath = BASE_PATH;
 }
 
 // Initialize face recognition service if available
@@ -183,7 +315,11 @@ app.get('/api/config', (req, res) => {
 app.use(requireAuth);
 
 // Serve static files from public directory (after auth check)
-app.use(express.static('public'));
+app.use(express.static('public', {
+  maxAge: '1d',
+  etag: true,
+  lastModified: true
+}));
 
 // Stemmer instance
 const stemmer = natural.PorterStemmer;
@@ -193,6 +329,31 @@ function getThumbnailPath(filename) {
   // Create a safe filename for the thumbnail
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
   return path.join(THUMBNAILS_DIR, `${safeName}.jpg`);
+}
+
+function resolveLibraryPath(filename) {
+  if (!filename || typeof filename !== 'string' || filename.includes('\0')) {
+    return null;
+  }
+  const resolvedBase = path.resolve(BASE_PATH);
+  const resolvedPath = path.resolve(path.join(BASE_PATH, filename));
+  const prefix = resolvedBase.endsWith(path.sep) ? resolvedBase : resolvedBase + path.sep;
+  if (resolvedPath !== resolvedBase && !resolvedPath.startsWith(prefix)) {
+    return null;
+  }
+  return resolvedPath;
+}
+
+function removeFilenameFromFilelist(filename) {
+  if (!fs.existsSync(FILELIST_PATH)) return;
+  const content = fs.readFileSync(FILELIST_PATH, 'utf-8');
+  const next = content
+    .split('\n')
+    .filter(line => line.trim() !== filename)
+    .join('\n');
+  if (next !== content) {
+    fs.writeFileSync(FILELIST_PATH, next);
+  }
 }
 
 // PDF thumbnail generation is disabled to avoid crashes
@@ -207,7 +368,7 @@ function generateThumbnail(videoPath, thumbnailPath, callback) {
   // Ensure we have absolute paths
   const absoluteVideoPath = path.resolve(videoPath);
   const absoluteThumbnailPath = path.resolve(thumbnailPath);
-  
+
   // Verify it's a file, not a directory
   try {
     const stats = fs.statSync(absoluteVideoPath);
@@ -217,24 +378,274 @@ function generateThumbnail(videoPath, thumbnailPath, callback) {
   } catch (err) {
     return callback(new Error(`File not found: ${absoluteVideoPath}`), null);
   }
-  
-  // Extract frame at 10% of video duration
-  // Use .input() to explicitly set the input file
-  ffmpeg()
-    .input(absoluteVideoPath)
-    .screenshots({
-      timestamps: ['10%'],
-      filename: path.basename(absoluteThumbnailPath),
-      folder: path.dirname(absoluteThumbnailPath),
-      size: '320x180'
-    })
-    .on('end', () => {
-      callback(null, absoluteThumbnailPath);
-    })
-    .on('error', (err) => {
-      console.error(`Error generating thumbnail for ${absoluteVideoPath}:`, err.message);
-      callback(err, null);
-    });
+
+  // First, get video duration to calculate a random seek position
+  ffmpeg.ffprobe(absoluteVideoPath, (err, metadata) => {
+    if (err) {
+      console.error(`Error probing video ${absoluteVideoPath}:`, err.message);
+      return callback(err, null);
+    }
+
+    // Get duration in seconds
+    const duration = metadata.format.duration || 0;
+
+    if (duration === 0) {
+      return callback(new Error('Could not determine video duration'), null);
+    }
+
+    // Pick a random position between 20-80% of video duration
+    const minSeek = duration * 0.20;
+    const maxSeek = duration * 0.80;
+    const seekTime = minSeek + Math.random() * (maxSeek - minSeek);
+
+    // OPTIMIZATION FOR RASPBERRY PI:
+    // Use input seeking (-ss before input) which is MUCH faster and uses less memory
+    // Only decode 1 second of video after the seek point
+    ffmpeg()
+      .input(absoluteVideoPath)
+      .inputOptions([
+        '-ss', seekTime.toString(),  // Seek BEFORE reading (input seeking - fast, low memory)
+        '-t', '1'                     // Only read 1 second after seek point
+      ])
+      .outputOptions([
+        '-vframes', '1',              // Extract only 1 frame
+        '-vf', 'scale=320:180',       // Scale to thumbnail size
+        '-q:v', '2'                   // High quality (1-31, lower is better)
+      ])
+      .output(absoluteThumbnailPath)
+      .on('end', () => {
+        callback(null, absoluteThumbnailPath);
+      })
+      .on('error', (err) => {
+        console.error(`Error generating thumbnail for ${absoluteVideoPath}:`, err.message);
+        callback(err, null);
+      })
+      .run();
+  });
+}
+
+// Generate a small JPEG thumbnail for an image (cached on disk)
+async function generateImageThumbnail(imagePath, thumbnailPath) {
+  if (!sharp) {
+    throw new Error('Sharp is not available');
+  }
+  await sharp(imagePath)
+    .rotate()
+    .resize(480, 270, { fit: 'cover', withoutEnlargement: true })
+    .jpeg({ quality: 72 })
+    .toFile(thumbnailPath);
+}
+
+const inFlightThumbnails = new Map();
+
+function ensureImageThumbnail(filename, imagePath, thumbnailPath) {
+  if (fs.existsSync(thumbnailPath)) {
+    return Promise.resolve(thumbnailPath);
+  }
+  if (inFlightThumbnails.has(filename)) {
+    return inFlightThumbnails.get(filename);
+  }
+  const job = generateImageThumbnail(imagePath, thumbnailPath)
+    .then(() => thumbnailPath)
+    .finally(() => inFlightThumbnails.delete(filename));
+  inFlightThumbnails.set(filename, job);
+  return job;
+}
+
+// Background job to generate all missing thumbnails (runs on startup)
+async function generateMissingThumbnails() {
+  console.log('\n=== Starting thumbnail generation ===');
+
+  try {
+    if (!db) {
+      console.log('Database not initialized, skipping thumbnail generation');
+      return;
+    }
+
+    // Get all video files from database
+    const videoFiles = db.prepare("SELECT id, filename FROM files WHERE file_type = 'video'").all();
+
+    console.log(`Found ${videoFiles.length} video files to check for thumbnails`);
+
+    let generated = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    const updateThumbnail = db.prepare('UPDATE files SET has_thumbnail = 1 WHERE id = ?');
+
+    // Process files sequentially (single-threaded)
+    for (let i = 0; i < videoFiles.length; i++) {
+      const file = videoFiles[i];
+      const filePath = path.join(BASE_PATH, file.filename);
+      const thumbnailPath = getThumbnailPath(file.filename);
+
+      try {
+        // Check if file exists
+        if (!fs.existsSync(filePath)) {
+          errors++;
+          continue;
+        }
+
+        // Check if thumbnail already exists
+        if (fs.existsSync(thumbnailPath)) {
+          updateThumbnail.run(file.id);
+          skipped++;
+          continue;
+        }
+
+        // Generate thumbnail
+        await new Promise((resolve) => {
+          generateThumbnail(filePath, thumbnailPath, (err) => {
+            if (err) {
+              errors++;
+              // Ignore error and continue
+            } else {
+              updateThumbnail.run(file.id);
+              generated++;
+            }
+            resolve();
+          });
+        });
+
+        // Small delay to let Raspberry Pi free up memory between files
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Show progress every 50 files
+        const processed = generated + skipped + errors;
+        if (processed % 50 === 0) {
+          console.log(`  Progress: ${processed}/${videoFiles.length} (${generated} generated, ${skipped} skipped, ${errors} errors)`);
+        }
+      } catch (error) {
+        errors++;
+        // Ignore error and continue
+      }
+    }
+
+    console.log(`=== Thumbnail generation complete ===`);
+    console.log(`  Total video files: ${videoFiles.length}`);
+    console.log(`  Thumbnails generated: ${generated}`);
+    console.log(`  Already existed (skipped): ${skipped}`);
+    console.log(`  Errors (ignored): ${errors}\n`);
+
+    if (sharp) {
+      await generateMissingImageThumbnails();
+    }
+  } catch (error) {
+    console.error('Error during thumbnail generation:', error);
+  }
+}
+
+async function generateMissingImageThumbnails() {
+  console.log('\n=== Starting image thumbnail generation ===');
+
+  const imageFiles = db.prepare("SELECT id, filename FROM files WHERE file_type = 'image'").all();
+  console.log(`Found ${imageFiles.length} image files to check for thumbnails`);
+
+  let generated = 0;
+  let skipped = 0;
+  let errors = 0;
+  const updateThumbnail = db.prepare('UPDATE files SET has_thumbnail = 1 WHERE id = ?');
+
+  for (const file of imageFiles) {
+    const filePath = path.join(BASE_PATH, file.filename);
+    const thumbnailPath = getThumbnailPath(file.filename);
+
+    try {
+      if (!fs.existsSync(filePath)) {
+        errors++;
+        continue;
+      }
+      if (fs.existsSync(thumbnailPath)) {
+        updateThumbnail.run(file.id);
+        skipped++;
+        continue;
+      }
+      await generateImageThumbnail(filePath, thumbnailPath);
+      updateThumbnail.run(file.id);
+      generated++;
+      if ((generated + skipped + errors) % 50 === 0) {
+        console.log(`  Progress: ${generated + skipped + errors}/${imageFiles.length} (${generated} generated)`);
+      }
+    } catch (error) {
+      errors++;
+    }
+  }
+
+  console.log(`=== Image thumbnail generation complete ===`);
+  console.log(`  Generated: ${generated}, skipped: ${skipped}, errors: ${errors}\n`);
+}
+
+// Background job to detect all video resolutions (runs on startup)
+async function detectAllVideoResolutions() {
+  console.log('\n=== Starting video resolution detection ===');
+
+  try {
+    if (!db) {
+      console.log('Database not initialized, skipping resolution detection');
+      return;
+    }
+
+    // Get all video files without resolution or with Unknown resolution
+    const videoFiles = db.prepare("SELECT id, filename FROM files WHERE file_type = 'video' AND (resolution IS NULL OR resolution = 'Unknown')").all();
+
+    console.log(`Found ${videoFiles.length} video files to detect resolution`);
+
+    if (videoFiles.length === 0) {
+      console.log('=== Resolution detection complete ===');
+      console.log('  All videos already have resolution detected\n');
+      return;
+    }
+
+    let detected = 0;
+    let errors = 0;
+
+    const updateResolution = db.prepare('UPDATE files SET resolution = ? WHERE id = ?');
+
+    // Process files sequentially (single-threaded)
+    for (let i = 0; i < videoFiles.length; i++) {
+      const file = videoFiles[i];
+      const filePath = path.join(BASE_PATH, file.filename);
+
+      try {
+        // Check if file exists
+        if (!fs.existsSync(filePath)) {
+          errors++;
+          continue;
+        }
+
+        // Detect resolution using ffprobe
+        await new Promise((resolve) => {
+          getVideoResolution(filePath, (err, result) => {
+            if (err) {
+              errors++;
+              // Set as Unknown on error
+              updateResolution.run('Unknown', file.id);
+            } else {
+              updateResolution.run(result.resolution, file.id);
+              detected++;
+            }
+            resolve();
+          });
+        });
+
+        // Show progress every 50 files
+        const processed = detected + errors;
+        if (processed % 50 === 0) {
+          console.log(`  Progress: ${processed}/${videoFiles.length} (${detected} detected, ${errors} errors)`);
+        }
+      } catch (error) {
+        errors++;
+        // Ignore error and continue
+      }
+    }
+
+    console.log(`=== Resolution detection complete ===`);
+    console.log(`  Total video files: ${videoFiles.length}`);
+    console.log(`  Resolutions detected: ${detected}`);
+    console.log(`  Errors (marked as Unknown): ${errors}\n`);
+  } catch (error) {
+    console.error('Error during resolution detection:', error);
+  }
 }
 
 // Predefined resolutions
@@ -385,6 +796,191 @@ function extractStems(filename) {
 // Date cache (in-memory and file-based) - declared early so it can be used
 const dateCache = new Map();
 
+// Hash cache (in-memory and file-based) for deduplication
+const hashCache = new Map();
+
+// Load hash cache from file
+function loadHashCache() {
+  try {
+    if (fs.existsSync(HASH_CACHE_FILE)) {
+      const cacheData = JSON.parse(fs.readFileSync(HASH_CACHE_FILE, 'utf8'));
+      for (const [filename, hash] of Object.entries(cacheData)) {
+        hashCache.set(filename, hash);
+      }
+      console.log(`Loaded ${hashCache.size} file hashes from cache`);
+    }
+  } catch (error) {
+    console.error('Error loading hash cache:', error);
+  }
+}
+
+// Save hash cache to file
+function saveHashCache() {
+  try {
+    const cacheData = {};
+    for (const [filename, hash] of hashCache.entries()) {
+      cacheData[filename] = hash;
+    }
+    fs.writeFileSync(HASH_CACHE_FILE, JSON.stringify(cacheData, null, 2));
+  } catch (error) {
+    console.error('Error saving hash cache:', error);
+  }
+}
+
+// Calculate SHA256 hash for a file
+function calculateFileHash(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    
+    stream.on('data', (data) => hash.update(data));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', (error) => reject(error));
+  });
+}
+
+// Get file hash (from cache or calculate)
+async function getFileHash(filename) {
+  // Check cache first
+  if (hashCache.has(filename)) {
+    return hashCache.get(filename);
+  }
+  
+  const fullPath = path.join(BASE_PATH, filename);
+  
+  try {
+    if (!fs.existsSync(fullPath)) {
+      return null;
+    }
+    
+    const hash = await calculateFileHash(fullPath);
+    hashCache.set(filename, hash);
+    return hash;
+  } catch (error) {
+    console.error(`Error calculating hash for ${filename}:`, error.message);
+    return null;
+  }
+}
+
+// Deduplicate files based on SHA256 hash (runs in background)
+async function deduplicateFiles() {
+  console.log('\n=== Starting file deduplication ===');
+
+  try {
+    if (!db) {
+      console.log('Database not initialized, skipping deduplication');
+      return;
+    }
+
+    const filesNeedingHash = db.prepare('SELECT id, filename, mtime, file_hash FROM files').all();
+
+    console.log(`Processing ${filesNeedingHash.length} files for duplicate detection...`);
+
+    if (filesNeedingHash.length === 0) {
+      console.log('No files to process');
+      return;
+    }
+
+    // Group files by hash
+    const hashGroups = new Map(); // hash -> array of {id, filename, mtime}
+    let processed = 0;
+    let errors = 0;
+
+    const updateHash = db.prepare('UPDATE files SET file_hash = ? WHERE id = ?');
+
+    const alreadyHashed = filesNeedingHash.filter(f => f.file_hash);
+    const toHash = filesNeedingHash.filter(f => !f.file_hash);
+
+    // Seed groups with existing hashes so duplicates can still be reported
+    for (const file of alreadyHashed) {
+      if (!hashGroups.has(file.file_hash)) {
+        hashGroups.set(file.file_hash, []);
+      }
+      hashGroups.get(file.file_hash).push({
+        id: file.id,
+        filename: file.filename,
+        mtime: file.mtime
+      });
+    }
+
+    console.log(`  ${alreadyHashed.length} files already hashed, ${toHash.length} remaining`);
+
+    for (const file of toHash) {
+      try {
+        const fullPath = path.join(BASE_PATH, file.filename);
+
+        if (!fs.existsSync(fullPath)) {
+          errors++;
+          continue;
+        }
+
+        // Get or calculate hash
+        const hash = await calculateFileHash(fullPath);
+
+        if (!hash) {
+          errors++;
+          continue;
+        }
+
+        // Update hash in database
+        updateHash.run(hash, file.id);
+
+        // Group by hash
+        if (!hashGroups.has(hash)) {
+          hashGroups.set(hash, []);
+        }
+        hashGroups.get(hash).push({
+          id: file.id,
+          filename: file.filename,
+          mtime: file.mtime
+        });
+
+        processed++;
+
+        // Show progress every 100 files
+        if (processed % 100 === 0) {
+          console.log(`  Processed ${processed}/${toHash.length} files (${errors} errors)`);
+        }
+      } catch (error) {
+        errors++;
+        if (errors % 100 === 0) {
+          console.log(`  Warning: ${errors} files had errors during hash calculation`);
+        }
+      }
+    }
+
+    // Find duplicates (hashes with more than one file)
+    const duplicates = [];
+    for (const [hash, fileList] of hashGroups.entries()) {
+      if (fileList.length > 1) {
+        // Sort by modification time (oldest first)
+        fileList.sort((a, b) => a.mtime - b.mtime);
+        duplicates.push({ hash, files: fileList });
+      }
+    }
+
+    if (duplicates.length === 0) {
+      console.log('=== Deduplication complete ===');
+      console.log(`  Total files processed: ${processed}`);
+      console.log(`  No duplicates found\n`);
+      return;
+    }
+
+    let extraCopies = 0;
+    for (const { hash, files } of duplicates) {
+      extraCopies += files.length - 1;
+      console.log(`  Hash ${hash.substring(0, 8)}...: ${files.length} copies, keeping "${files[0].filename}"`);
+    }
+
+    console.log(`=== Deduplication complete ===`);
+    console.log(`  Newly hashed: ${processed}`);
+    console.log(`  Duplicate groups: ${duplicates.length}`);
+    console.log(`  Extra copies (not deleted): ${extraCopies}\n`);
+  } catch (error) {
+    console.error('Error during deduplication:', error);
+  }
+}
+
 // Load date cache from file
 function loadDateCache() {
   try {
@@ -470,6 +1066,154 @@ function getFileDateSync(filename) {
     };
     dateCache.set(filename, result);
     return result;
+  }
+}
+
+// Scan media path and populate database
+function scanAndPopulateDatabase() {
+  console.log('\n=== Scanning media path and populating database ===');
+
+  try {
+    if (!BASE_PATH || !fs.existsSync(BASE_PATH)) {
+      console.log(`Media path does not exist: ${BASE_PATH}`);
+      console.log('Skipping file scanning');
+      return;
+    }
+
+    console.log(`Scanning media path: ${BASE_PATH}`);
+
+    // Supported file extensions
+    const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp', '.ogv'];
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.tiff', '.tif', '.ico'];
+    const pdfExtensions = ['.pdf'];
+    const allExtensions = [...videoExtensions, ...imageExtensions, ...pdfExtensions];
+
+    const filesFound = [];
+
+    // Recursively find all supported files
+    function scanDirectory(dir, baseDir) {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+        for (const entry of entries) {
+          // Skip macOS system files
+          if (entry.name.startsWith('._') || entry.name === '.DS_Store') {
+            continue;
+          }
+
+          const fullPath = path.join(dir, entry.name);
+
+          if (entry.isDirectory()) {
+            // Recursively scan subdirectories
+            scanDirectory(fullPath, baseDir);
+          } else if (entry.isFile()) {
+            const ext = path.extname(entry.name).toLowerCase();
+            if (allExtensions.includes(ext)) {
+              // Get relative path from BASE_PATH
+              const relativePath = path.relative(baseDir, fullPath);
+              filesFound.push(relativePath);
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error scanning directory ${dir}:`, error.message);
+      }
+    }
+
+    scanDirectory(BASE_PATH, BASE_PATH);
+
+    console.log(`Found ${filesFound.length} files, updating database...`);
+
+    // Get existing files from database
+    const existingFiles = new Set();
+    const rows = db.prepare('SELECT filename FROM files').all();
+    rows.forEach(row => existingFiles.add(row.filename));
+
+    // Prepare statements for batch insert
+    const insertFile = db.prepare(`
+      INSERT OR IGNORE INTO files (filename, file_type, display_name, file_size, mtime, date, date_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const insertStem = db.prepare(`
+      INSERT INTO stems (file_id, stem)
+      VALUES (?, ?)
+    `);
+
+    const getFileId = db.prepare('SELECT id FROM files WHERE filename = ?');
+
+    let added = 0;
+    let skipped = 0;
+
+    // Use transaction for better performance
+    const insertMany = db.transaction((files) => {
+      for (const filename of files) {
+        if (existingFiles.has(filename)) {
+          skipped++;
+          continue;
+        }
+
+        const fullPath = path.join(BASE_PATH, filename);
+        const fileType = getFileType(filename);
+        const displayName = path.basename(filename);
+
+        try {
+          const stats = fs.statSync(fullPath);
+          const fileSize = stats.size;
+          const mtime = stats.mtimeMs;
+          const date = stats.mtime.toISOString();
+          const dateSource = 'file';
+
+          // Insert file record
+          insertFile.run(filename, fileType, displayName, fileSize, mtime, date, dateSource);
+
+          // Get the file ID
+          const fileRecord = getFileId.get(filename);
+          if (fileRecord) {
+            // Insert stems
+            const stems = extractStems(filename);
+            for (const stem of stems) {
+              insertStem.run(fileRecord.id, stem);
+            }
+          }
+
+          added++;
+
+          if (added % 100 === 0) {
+            console.log(`  Processed ${added} files...`);
+          }
+        } catch (error) {
+          console.error(`Error processing ${filename}:`, error.message);
+        }
+      }
+    });
+
+    insertMany(filesFound);
+
+    // Clean up files that no longer exist
+    const filesInDb = db.prepare('SELECT id, filename FROM files').all();
+    const filesOnDisk = new Set(filesFound);
+    let removed = 0;
+
+    const deleteFile = db.prepare('DELETE FROM files WHERE id = ?');
+    const deleteMany = db.transaction((filesToDelete) => {
+      for (const file of filesToDelete) {
+        if (!filesOnDisk.has(file.filename)) {
+          deleteFile.run(file.id);
+          removed++;
+        }
+      }
+    });
+
+    deleteMany(filesInDb);
+
+    console.log(`=== Database population complete ===`);
+    console.log(`  Files found: ${filesFound.length}`);
+    console.log(`  Files added: ${added}`);
+    console.log(`  Files skipped (already in DB): ${skipped}`);
+    console.log(`  Files removed (no longer exist): ${removed}\n`);
+  } catch (error) {
+    console.error('Error scanning and populating database:', error);
   }
 }
 
@@ -615,218 +1359,237 @@ async function getFileDate(filename) {
 }
 
 
-// Read and parse filelist
-function getVideoList() {
-  try {
-    if (!fs.existsSync(FILELIST_PATH)) {
-      return [];
-    }
-    
-    const content = fs.readFileSync(FILELIST_PATH, 'utf-8');
-    const files = content
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0);
-    
-    return files.map(file => {
-      const fullPath = path.join(BASE_PATH, file);
-      const stems = extractStems(file);
-      const fileType = getFileType(file);
-      const thumbnailPath = getThumbnailPath(file);
-      
-      // Get resolution from resolution files (only for videos)
-      const resolution = fileType === 'video' ? getVideoResolutionFromFiles(file) : null;
-      
-      // Get file date (from metadata or file modification time)
-      const dateInfo = getFileDateSync(file);
-      
-      return {
-        filename: file,
-        fullPath: `/api/video/${file}`, // Use API endpoint instead of direct path
-        thumbnailPath: `/api/thumbnail/${encodeURIComponent(file)}`,
-        displayName: path.basename(file),
-        stems: stems,
-        resolution: resolution,
-        fileType: fileType,
-        date: dateInfo.date,
-        dateSource: dateInfo.source
-      };
-    });
-  } catch (error) {
-    console.error('Error reading filelist:', error);
-    return [];
+function mapFileRow(row, stems = []) {
+  return {
+    filename: row.filename,
+    fullPath: `/api/video/${encodeURIComponent(row.filename)}`,
+    thumbnailPath: `/api/thumbnail/${encodeURIComponent(row.filename)}`,
+    displayName: row.display_name,
+    stems,
+    resolution: row.resolution || (row.file_type === 'video' ? 'Unknown' : null),
+    fileType: row.file_type,
+    date: row.date,
+    dateSource: row.date_source || 'file'
+  };
+}
+
+function attachStems(rows) {
+  if (!rows.length) return [];
+  const ids = rows.map(row => row.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const stemRows = db.prepare(
+    `SELECT file_id, stem FROM stems WHERE file_id IN (${placeholders})`
+  ).all(...ids);
+  const byFile = new Map();
+  for (const row of stemRows) {
+    if (!byFile.has(row.file_id)) byFile.set(row.file_id, []);
+    byFile.get(row.file_id).push(row.stem);
   }
+  return rows.map(row => mapFileRow(row, byFile.get(row.id) || []));
+}
+
+function parseStemList(stemFilter) {
+  if (!stemFilter) return [];
+  return String(stemFilter).toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function buildFileFilters({ fileType, resolution, dateFrom, dateTo, stems, mode, favoritesOnly, userId }) {
+  const where = [];
+  const params = [];
+
+  if (fileType && fileType !== 'all') {
+    where.push('f.file_type = ?');
+    params.push(fileType);
+  }
+  if (resolution) {
+    where.push("f.file_type = 'video' AND f.resolution = ?");
+    params.push(resolution);
+  }
+  if (dateFrom) {
+    where.push('f.date >= ?');
+    params.push(dateFrom);
+  }
+  if (dateTo) {
+    where.push('f.date <= ?');
+    params.push(dateTo);
+  }
+  if (stems && stems.length) {
+    const placeholders = stems.map(() => '?').join(',');
+    if (String(mode).toUpperCase() === 'AND') {
+      where.push(`f.id IN (SELECT file_id FROM stems WHERE stem IN (${placeholders}) GROUP BY file_id HAVING COUNT(DISTINCT stem) = ?)`);
+      params.push(...stems, stems.length);
+    } else {
+      where.push(`f.id IN (SELECT file_id FROM stems WHERE stem IN (${placeholders}))`);
+      params.push(...stems);
+    }
+  }
+  if (favoritesOnly && userId) {
+    where.push('f.id IN (SELECT file_id FROM favorites WHERE user_id = ?)');
+    params.push(userId);
+  }
+
+  return {
+    clause: where.length ? `WHERE ${where.join(' AND ')}` : '',
+    params
+  };
 }
 
 // API endpoint to get videos with pagination and filtering
 app.get('/api/videos', (req, res) => {
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 12;
-  const stemFilter = req.query.stem || null;
-  const filterMode = req.query.mode || 'OR'; // 'AND' or 'OR'
-  const resolutionFilter = req.query.resolution || null;
-  const fileTypeFilter = req.query.fileType || null; // 'video', 'pdf', 'image', or null for all
-  const dateFrom = req.query.dateFrom || null; // ISO date string
-  const dateTo = req.query.dateTo || null; // ISO date string
-  
-  let videos = getVideoList();
-  
-  // Filter by file type if provided
-  if (fileTypeFilter && fileTypeFilter !== 'all') {
-    videos = videos.filter(video => video.fileType === fileTypeFilter);
-  }
-  
-  // Filter by resolution if provided (only for videos)
-  if (resolutionFilter) {
-    // Get videos from the resolution file
-    const resolutionVideos = loadVideosForResolution(resolutionFilter);
-    const resolutionSet = new Set(resolutionVideos);
-    videos = videos.filter(video => 
-      video.fileType === 'video' && resolutionSet.has(video.filename)
-    );
-  }
-  
-  // Filter by stem(s) if provided
-  if (stemFilter) {
-    // Parse multiple stems (comma-separated or space-separated with AND/OR)
-    const stems = stemFilter.toLowerCase().split(',').map(s => s.trim()).filter(s => s);
-    
-    if (stems.length > 0) {
-      if (filterMode.toUpperCase() === 'AND') {
-        // All stems must be present (AND logic)
-        videos = videos.filter(video => 
-          stems.every(stem => video.stems.includes(stem))
-        );
-      } else {
-        // At least one stem must be present (OR logic - default)
-        videos = videos.filter(video => 
-          stems.some(stem => video.stems.includes(stem))
-        );
-      }
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
     }
-  }
-  
-  // Filter by date range if provided
-  if (dateFrom || dateTo) {
-    videos = videos.filter(video => {
-      const videoDate = new Date(video.date);
-      if (dateFrom && videoDate < new Date(dateFrom)) {
-        return false;
-      }
-      if (dateTo) {
-        // Include the entire end date (set to end of day)
-        const endDate = new Date(dateTo);
-        endDate.setHours(23, 59, 59, 999);
-        if (videoDate > endDate) {
-          return false;
-        }
-      }
-      return true;
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 12));
+    const stems = parseStemList(req.query.stem);
+    const user = getSessionUser(req);
+    const favoritesOnly = req.query.favorites === '1' || req.query.favorites === 'true';
+    const filters = buildFileFilters({
+      fileType: req.query.fileType,
+      resolution: req.query.resolution,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      stems,
+      mode: req.query.mode,
+      favoritesOnly,
+      userId: user && user.id
     });
+
+    const countRow = db.prepare(`SELECT COUNT(*) AS total FROM files f ${filters.clause}`).get(...filters.params);
+    const totalVideos = countRow.total || 0;
+    const totalPages = Math.max(1, Math.ceil(totalVideos / limit) || 1);
+    const offset = (page - 1) * limit;
+
+    const unfiltered = !req.query.stem && !req.query.resolution && !req.query.fileType && !req.query.dateFrom && !req.query.dateTo && !favoritesOnly;
+    const orderBy = (unfiltered && page === 1) ? 'ORDER BY RANDOM()' : 'ORDER BY f.date DESC';
+
+    const rows = db.prepare(`
+      SELECT f.id, f.filename, f.file_type, f.display_name, f.date, f.date_source, f.resolution
+      FROM files f
+      ${filters.clause}
+      ${orderBy}
+      LIMIT ? OFFSET ?
+    `).all(...filters.params, limit, offset);
+
+    res.json({
+      videos: attachFavoriteFlags(attachStems(rows), user && user.id),
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalVideos,
+        limit
+      }
+    });
+  } catch (error) {
+    console.error('Error listing videos:', error);
+    res.status(500).json({ error: 'Error listing videos' });
   }
-  
-  // Sort by date (newest first) when date filtering is active
-  if (dateFrom || dateTo) {
-    videos.sort((a, b) => new Date(b.date) - new Date(a.date));
-  }
-  
-  // Randomize videos on the first page only (when no filters are applied)
-  if (page === 1 && !stemFilter && !resolutionFilter && !fileTypeFilter && !dateFrom && !dateTo) {
-    // Fisher-Yates shuffle algorithm
-    for (let i = videos.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [videos[i], videos[j]] = [videos[j], videos[i]];
-    }
-  }
-  
-  // Calculate pagination
-  const startIndex = (page - 1) * limit;
-  const endIndex = startIndex + limit;
-  const paginatedVideos = videos.slice(startIndex, endIndex);
-  const totalPages = Math.ceil(videos.length / limit);
-  
-  res.json({
-    videos: paginatedVideos,
-    pagination: {
-      currentPage: page,
-      totalPages: totalPages,
-      totalVideos: videos.length,
-      limit: limit
-    }
-  });
 });
 
 // API endpoint to get date range (min and max dates)
 app.get('/api/date-range', (req, res) => {
-  const videos = getVideoList();
-  
-  if (videos.length === 0) {
-    return res.json({ minDate: null, maxDate: null });
+  try {
+    if (!db) {
+      return res.json({ minDate: null, maxDate: null });
+    }
+    const row = db.prepare('SELECT MIN(date) AS minDate, MAX(date) AS maxDate FROM files').get();
+    res.json({
+      minDate: row && row.minDate ? row.minDate : null,
+      maxDate: row && row.maxDate ? row.maxDate : null
+    });
+  } catch (error) {
+    console.error('Error getting date range:', error);
+    res.json({ minDate: null, maxDate: null });
   }
-  
-  const dates = videos.map(v => new Date(v.date)).filter(d => !isNaN(d.getTime()));
-  
-  if (dates.length === 0) {
-    return res.json({ minDate: null, maxDate: null });
-  }
-  
-  const minDate = new Date(Math.min(...dates));
-  const maxDate = new Date(Math.max(...dates));
-  
-  res.json({
-    minDate: minDate.toISOString(),
-    maxDate: maxDate.toISOString()
-  });
 });
 
 // API endpoint to get file counts per date
 app.get('/api/date-counts', (req, res) => {
-  const videos = getVideoList();
-  const dateCounts = {};
-  
-  videos.forEach(video => {
-    if (video.date) {
-      // Get date as YYYY-MM-DD (without time)
-      const date = new Date(video.date);
-      const dateKey = date.toISOString().split('T')[0]; // YYYY-MM-DD format
-      dateCounts[dateKey] = (dateCounts[dateKey] || 0) + 1;
+  try {
+    if (!db) {
+      return res.json({ dateCounts: {} });
     }
-  });
-  
-  res.json({ dateCounts });
+    const rows = db.prepare(`
+      SELECT substr(date, 1, 10) AS day, COUNT(*) AS count
+      FROM files
+      WHERE date IS NOT NULL AND date != ''
+      GROUP BY day
+    `).all();
+    const dateCounts = {};
+    for (const row of rows) {
+      if (row.day) {
+        dateCounts[row.day] = row.count;
+      }
+    }
+    res.json({ dateCounts });
+  } catch (error) {
+    console.error('Error getting date counts:', error);
+    res.json({ dateCounts: {} });
+  }
 });
 
 // API endpoint to get all unique stems
 app.get('/api/stems', (req, res) => {
-  const videos = getVideoList();
-  const stemCounts = {};
-  
-  videos.forEach(video => {
-    video.stems.forEach(stem => {
-      stemCounts[stem] = (stemCounts[stem] || 0) + 1;
+  try {
+    if (!db) {
+      return res.json({ stems: [] });
+    }
+    const filters = buildFileFilters({
+      dateFrom: req.query.dateFrom || null,
+      dateTo: req.query.dateTo || null
     });
-  });
-  
-  // Convert to array and sort by count
-  const stems = Object.entries(stemCounts)
-    .map(([stem, count]) => ({ stem, count }))
-    .sort((a, b) => b.count - a.count);
-  
-  res.json({ stems });
+    const stems = db.prepare(`
+      SELECT s.stem AS stem, COUNT(*) AS count
+      FROM stems s
+      JOIN files f ON f.id = s.file_id
+      ${filters.clause}
+      GROUP BY s.stem
+      ORDER BY count DESC
+      LIMIT 200
+    `).all(...filters.params);
+    res.json({ stems });
+  } catch (error) {
+    console.error('Error getting stems:', error);
+    res.json({ stems: [] });
+  }
 });
 
 // API endpoint to get all unique resolutions
 app.get('/api/resolutions', (req, res) => {
-  // Return all predefined resolutions with counts (even if 0)
-  const resolutions = RESOLUTIONS.map(resolution => {
-    const videos = loadVideosForResolution(resolution);
-    return {
-      resolution: resolution,
-      count: videos.length
-    };
-  });
-  
-  res.json({ resolutions });
+  try {
+    if (!db) {
+      return res.json({ resolutions: [] });
+    }
+    const filters = buildFileFilters({
+      dateFrom: req.query.dateFrom || null,
+      dateTo: req.query.dateTo || null
+    });
+    const extra = filters.clause
+      ? `${filters.clause} AND f.file_type = 'video'`
+      : `WHERE f.file_type = 'video'`;
+    const rows = db.prepare(`
+      SELECT f.resolution AS resolution, COUNT(*) AS count
+      FROM files f
+      ${extra}
+      GROUP BY f.resolution
+    `).all(...filters.params);
+    const counts = {};
+    for (const row of rows) {
+      if (row.resolution) {
+        counts[row.resolution] = row.count;
+      }
+    }
+    const resolutions = RESOLUTIONS.map(resolution => ({
+      resolution,
+      count: counts[resolution] || 0
+    }));
+    res.json({ resolutions });
+  } catch (error) {
+    console.error('Error getting resolutions:', error);
+    res.json({ resolutions: [] });
+  }
 });
 
 // API endpoint to detect and save video resolution
@@ -834,193 +1597,208 @@ app.get('/api/detect-resolution/:filename(*)', (req, res) => {
   const filename = decodeURIComponent(req.params.filename);
   const filePath = path.join(BASE_PATH, filename);
   const fileType = getFileType(filename);
-  
+
   // Only process video files
   if (fileType !== 'video') {
     return res.json({ resolution: null, error: 'Not a video file' });
   }
-  
+
   // Security check
   const resolvedPath = path.resolve(filePath);
   const resolvedBase = path.resolve(BASE_PATH);
-  
+
   if (!resolvedPath.startsWith(resolvedBase)) {
     return res.status(403).json({ error: 'Access denied' });
   }
-  
-  // Check if already processed
-  const existingResolution = getVideoResolutionFromFiles(filename);
-  if (existingResolution !== 'Unknown') {
-    return res.json({ resolution: existingResolution, cached: true });
+
+  if (!db) {
+    return res.status(500).json({ error: 'Database not initialized' });
   }
-  
+
+  // Check if already processed in database
+  const fileRecord = db.prepare('SELECT id, resolution FROM files WHERE filename = ?').get(filename);
+  if (!fileRecord) {
+    return res.status(404).json({ error: 'File not found in database' });
+  }
+
+  if (fileRecord.resolution && fileRecord.resolution !== 'Unknown') {
+    return res.json({ resolution: fileRecord.resolution, cached: true });
+  }
+
   // Detect resolution
   getVideoResolution(filePath, (err, result) => {
     if (err) {
       console.error('Error detecting resolution:', err);
       return res.json({ resolution: 'Unknown', error: err.message });
     }
-    
-    // Remove from other resolution files (in case it was moved)
-    for (const res of RESOLUTIONS) {
-      const videos = loadVideosForResolution(res);
-      const index = videos.indexOf(filename);
-      if (index > -1) {
-        videos.splice(index, 1);
-        const resolutionFile = path.join(RESOLUTIONS_DIR, `${res}.txt`);
-        fs.writeFileSync(resolutionFile, videos.join('\n') + (videos.length > 0 ? '\n' : ''));
-      }
-    }
-    
-    // Save to the correct resolution file
-    saveVideoToResolution(filename, result.resolution);
-    
+
+    // Update resolution in database
+    const updateStmt = db.prepare('UPDATE files SET resolution = ? WHERE id = ?');
+    updateStmt.run(result.resolution, fileRecord.id);
+
     res.json({ resolution: result.resolution, cached: false });
   });
 });
 
-// Serve video and PDF files
+// Serve video and PDF files with streaming support
 app.get('/api/video/:filename(*)', (req, res) => {
   const filename = req.params.filename;
   const filePath = path.join(BASE_PATH, filename);
-  
+
   // Security check: ensure the path is within BASE_PATH
   const resolvedPath = path.resolve(filePath);
   const resolvedBase = path.resolve(BASE_PATH);
-  
+
   if (!resolvedPath.startsWith(resolvedBase)) {
     return res.status(403).json({ error: 'Access denied' });
   }
-  
+
   // Check if file exists
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'File not found' });
   }
-  
-  // Set appropriate content type
+
   const fileType = getFileType(filename);
-  if (fileType === 'pdf') {
-    res.setHeader('Content-Type', 'application/pdf');
+  const stat = fs.statSync(resolvedPath);
+  const fileSize = stat.size;
+  const range = req.headers.range;
+
+  // Set appropriate content type based on file extension
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes = {
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.ogg': 'video/ogg',
+    '.ogv': 'video/ogg',
+    '.mov': 'video/quicktime',
+    '.avi': 'video/x-msvideo',
+    '.mkv': 'video/x-matroska',
+    '.m4v': 'video/mp4',
+    '.pdf': 'application/pdf',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp'
+  };
+  const contentType = mimeTypes[ext] || 'application/octet-stream';
+
+  // Handle range requests for video streaming
+  if (range && fileType === 'video') {
+    const parts = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    const chunkSize = (end - start) + 1;
+
+    const file = fs.createReadStream(resolvedPath, { start, end });
+    const head = {
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': chunkSize,
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=3600'
+    };
+
+    res.writeHead(206, head);
+    file.pipe(res);
+  } else {
+    // For non-video files or requests without range header
+    const head = {
+      'Content-Length': fileSize,
+      'Content-Type': contentType,
+    };
+
+    // Add Accept-Ranges for all files to indicate streaming support
+    if (fileType === 'video') {
+      head['Accept-Ranges'] = 'bytes';
+    }
+
+    res.writeHead(200, head);
+    fs.createReadStream(resolvedPath).pipe(res);
   }
-  
-  // Serve the file (resolvedPath is already absolute)
-  res.sendFile(resolvedPath);
 });
 
+function sendCachedFile(res, filePath, cacheControl) {
+  res.setHeader('Cache-Control', cacheControl);
+  res.sendFile(filePath, (err) => {
+    if (!err) return;
+    if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') {
+      return;
+    }
+    console.error(`Error sending file ${filePath}:`, err);
+    if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+      res.status(500).json({ error: 'Error serving file' });
+    }
+  });
+}
+
+function sendPlaceholderSvg(res, svg, cacheable) {
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', cacheable ? 'public, max-age=86400' : 'no-cache');
+  res.send(svg);
+}
+
 // Serve thumbnail images
-app.get('/api/thumbnail/:filename(*)', (req, res) => {
+app.get('/api/thumbnail/:filename(*)', async (req, res) => {
   const filename = decodeURIComponent(req.params.filename);
   const filePath = path.join(BASE_PATH, filename);
   const fileType = getFileType(filename);
   const thumbnailPath = getThumbnailPath(filename);
-  
-  // Security check: ensure the path is within BASE_PATH
+
   const resolvedPath = path.resolve(filePath);
   const resolvedBase = path.resolve(BASE_PATH);
-  
+
   if (!resolvedPath.startsWith(resolvedBase)) {
     return res.status(403).json({ error: 'Access denied' });
   }
-  
-  // Check if file exists
+
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'File not found' });
   }
-  
-  // Helper function to check if response is still writable
-  function isResponseWritable(res) {
-    return !res.headersSent && !res.writableEnded && !res.destroyed;
-  }
-  
-  // For images, serve the image file directly as thumbnail
-  if (fileType === 'image') {
-    return res.sendFile(resolvedPath, (err) => {
-      if (err) {
-        if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') {
-          console.log(`Client disconnected while sending image: ${resolvedPath}`);
-          return;
-        }
-        console.error(`Error sending image file ${resolvedPath}:`, err);
-        if (isResponseWritable(res)) {
-          res.status(500).json({ error: 'Error serving image' });
-        }
-      }
-    });
-  }
-  
-  // Resolve thumbnail path to absolute
+
   const absoluteThumbnailPath = path.resolve(thumbnailPath);
-  
-  // If thumbnail exists, serve it
+  const longCache = 'public, max-age=604800, immutable';
+
   if (fs.existsSync(absoluteThumbnailPath)) {
-    return res.sendFile(absoluteThumbnailPath, (err) => {
-      if (err) {
-        // ECONNABORTED means client disconnected - this is normal, don't log as error
-        if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') {
-          console.log(`Client disconnected while sending thumbnail: ${absoluteThumbnailPath}`);
-          return;
-        }
-        console.error(`Error sending thumbnail file ${absoluteThumbnailPath}:`, err);
-        if (isResponseWritable(res)) {
-          res.status(500).json({ error: 'Error serving thumbnail' });
-        }
-      }
-    });
+    return sendCachedFile(res, absoluteThumbnailPath, longCache);
   }
-  
-  // For PDFs, serve placeholder SVG icon
-  // PDF thumbnail generation is disabled to avoid crashes
+
+  if (fileType === 'image' && sharp) {
+    try {
+      const generated = await ensureImageThumbnail(filename, resolvedPath, absoluteThumbnailPath);
+      return sendCachedFile(res, generated, longCache);
+    } catch (error) {
+      console.error(`Error generating image thumbnail for ${filename}:`, error.message);
+      return sendCachedFile(res, resolvedPath, 'public, max-age=3600');
+    }
+  }
+
+  if (fileType === 'image') {
+    return sendCachedFile(res, resolvedPath, 'public, max-age=3600');
+  }
+
   if (fileType === 'pdf') {
     const pdfIconSvg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="320" height="180" xmlns="http://www.w3.org/2000/svg">
-  <rect width="320" height="180" fill="#1a1a1a"/>
-  <rect x="100" y="40" width="120" height="100" fill="#dc2626" rx="4"/>
-  <text x="160" y="110" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="white" text-anchor="middle">PDF</text>
-  <text x="160" y="160" font-family="Arial, sans-serif" font-size="12" fill="#aaaaaa" text-anchor="middle">Document</text>
+  <rect width="320" height="180" fill="#14161c"/>
+  <rect x="100" y="40" width="120" height="100" fill="#e07a5f" rx="8"/>
+  <text x="160" y="110" font-family="system-ui, sans-serif" font-size="36" font-weight="700" fill="white" text-anchor="middle">PDF</text>
 </svg>`;
-    res.setHeader('Content-Type', 'image/svg+xml');
-    return res.send(pdfIconSvg);
+    return sendPlaceholderSvg(res, pdfIconSvg, true);
   }
-  
-  // For videos, generate thumbnail on-the-fly
+
   if (fileType === 'video') {
-    generateThumbnail(filePath, thumbnailPath, (err, generatedPath) => {
-      if (err) {
-        // If thumbnail generation fails, return a placeholder or error
-        console.error('Thumbnail generation error:', err);
-        if (isResponseWritable(res)) {
-          return res.status(500).json({ error: 'Failed to generate thumbnail' });
-        }
-        return;
-      }
-      
-      // Serve the newly generated thumbnail (generatedPath is already absolute)
-      if (generatedPath && fs.existsSync(generatedPath)) {
-        res.sendFile(generatedPath, (err) => {
-          if (err) {
-            // ECONNABORTED means client disconnected - this is normal, don't log as error
-            if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') {
-              console.log(`Client disconnected while sending generated thumbnail: ${generatedPath}`);
-              return;
-            }
-            console.error(`Error sending generated thumbnail ${generatedPath}:`, err);
-            if (isResponseWritable(res)) {
-              res.status(500).json({ error: 'Error serving generated thumbnail' });
-            }
-          }
-        });
-      } else {
-        console.error(`Generated thumbnail not found: ${generatedPath}`);
-        if (isResponseWritable(res)) {
-          res.status(500).json({ error: 'Thumbnail file not found after generation' });
-        }
-      }
-    });
-  } else {
-    // Unknown file type, return 404
-    if (isResponseWritable(res)) {
-      res.status(404).json({ error: 'Thumbnail not available for this file type' });
-    }
+    const videoIconSvg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="320" height="180" xmlns="http://www.w3.org/2000/svg">
+  <rect width="320" height="180" fill="#14161c"/>
+  <circle cx="160" cy="90" r="36" fill="#f0b429"/>
+  <polygon points="150,72 150,108 182,90" fill="#14161c"/>
+</svg>`;
+    return sendPlaceholderSvg(res, videoIconSvg, false);
+  }
+
+  if (!res.headersSent) {
+    res.status(404).json({ error: 'Thumbnail not available for this file type' });
   }
 });
 
@@ -1042,8 +1820,10 @@ app.post('/api/login', (req, res) => {
   }
   
   if (verifyCredentials(username, password)) {
+    const user = getOrCreateUser(username);
     req.session.authenticated = true;
     req.session.username = username;
+    req.session.userId = user ? user.id : null;
     res.json({ success: true, message: 'Login successful' });
   } else {
     res.status(401).json({ error: 'Invalid username or password' });
@@ -1062,9 +1842,124 @@ app.post('/api/logout', (req, res) => {
 
 // Check authentication status
 app.get('/api/auth/status', (req, res) => {
+  const user = getSessionUser(req);
   res.json({
-    authenticated: req.session && req.session.authenticated || false,
-    username: req.session && req.session.username || null
+    authenticated: !!(req.session && req.session.authenticated),
+    username: req.session && req.session.username || null,
+    favoriteCount: user ? getFavoriteCount(user.id) : 0
+  });
+});
+
+app.get('/api/me', (req, res) => {
+  const user = getSessionUser(req);
+  if (!user || !db) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  const profile = db.prepare('SELECT username, created_at, last_login FROM users WHERE id = ?').get(user.id);
+  res.json({
+    username: user.username,
+    createdAt: profile && profile.created_at ? profile.created_at * 1000 : null,
+    lastLogin: profile && profile.last_login ? profile.last_login * 1000 : null,
+    favoriteCount: getFavoriteCount(user.id)
+  });
+});
+
+app.post('/api/favorites/toggle', (req, res) => {
+  try {
+    const user = getSessionUser(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    const filename = req.body && req.body.filename;
+    if (!filename) {
+      return res.status(400).json({ error: 'filename is required' });
+    }
+    const file = db.prepare('SELECT id FROM files WHERE filename = ?').get(filename);
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    const existing = db.prepare('SELECT 1 FROM favorites WHERE user_id = ? AND file_id = ?').get(user.id, file.id);
+    if (existing) {
+      db.prepare('DELETE FROM favorites WHERE user_id = ? AND file_id = ?').run(user.id, file.id);
+      return res.json({ favorited: false, favoriteCount: getFavoriteCount(user.id) });
+    }
+    db.prepare('INSERT INTO favorites (user_id, file_id) VALUES (?, ?)').run(user.id, file.id);
+    res.json({ favorited: true, favoriteCount: getFavoriteCount(user.id) });
+  } catch (error) {
+    console.error('Error toggling favorite:', error);
+    res.status(500).json({ error: 'Error updating favorite' });
+  }
+});
+
+app.delete('/api/file/:filename(*)', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+
+    const filename = decodeURIComponent(req.params.filename);
+    const filePath = resolveLibraryPath(filename);
+    if (!filePath) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const record = db.prepare('SELECT id, filename FROM files WHERE filename = ?').get(filename);
+    if (!record) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    try {
+      if (fs.existsSync(filePath)) {
+        const stats = fs.statSync(filePath);
+        if (!stats.isFile()) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+        fs.unlinkSync(filePath);
+      }
+    } catch (error) {
+      console.error('Error deleting media file:', error);
+      return res.status(500).json({ error: 'Could not delete file from disk' });
+    }
+
+    const thumbnailPath = getThumbnailPath(filename);
+    try {
+      if (fs.existsSync(thumbnailPath)) {
+        fs.unlinkSync(thumbnailPath);
+      }
+    } catch (error) {
+      console.warn('Could not delete thumbnail:', error.message);
+    }
+
+    db.prepare('DELETE FROM files WHERE id = ?').run(record.id);
+
+    try {
+      removeFilenameFromFilelist(filename);
+    } catch (error) {
+      console.warn('Could not update filelist:', error.message);
+    }
+
+    res.json({ ok: true, filename });
+  } catch (error) {
+    console.error('Error removing file:', error);
+    res.status(500).json({ error: 'Error removing file' });
+  }
+});
+
+app.get('/api/favorites', (req, res) => {
+  const user = getSessionUser(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  const rows = db.prepare(`
+    SELECT f.filename
+    FROM favorites fav
+    JOIN files f ON f.id = fav.file_id
+    WHERE fav.user_id = ?
+    ORDER BY fav.created_at DESC
+  `).all(user.id);
+  res.json({
+    filenames: rows.map(row => row.filename),
+    favoriteCount: rows.length
   });
 });
 
@@ -1134,41 +2029,50 @@ if (faceService) {
 
 // API endpoint to get a single video and related videos
 app.get('/api/video-info/:filename(*)', (req, res) => {
-  const filename = decodeURIComponent(req.params.filename);
-  const videos = getVideoList();
-  
-  // Find the current video
-  const currentVideo = videos.find(v => v.filename === filename);
-  
-  if (!currentVideo) {
-    return res.status(404).json({ error: 'Video not found' });
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+
+    const filename = decodeURIComponent(req.params.filename);
+    const current = db.prepare(`
+      SELECT id, filename, file_type, display_name, date, date_source, resolution
+      FROM files WHERE filename = ?
+    `).get(filename);
+
+    if (!current) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    const user = getSessionUser(req);
+    const [currentVideo] = attachFavoriteFlags(attachStems([current]), user && user.id);
+
+    const relatedRows = db.prepare(`
+      SELECT f.id, f.filename, f.file_type, f.display_name, f.date, f.date_source, f.resolution,
+             COUNT(s.stem) AS similarityScore
+      FROM files f
+      JOIN stems s ON f.id = s.file_id
+      WHERE f.id != ? AND f.file_type = ?
+        AND s.stem IN (SELECT stem FROM stems WHERE file_id = ?)
+      GROUP BY f.id
+      ORDER BY similarityScore DESC
+      LIMIT 20
+    `).all(current.id, current.file_type, current.id);
+
+    const relatedVideos = attachFavoriteFlags(attachStems(relatedRows), user && user.id).map((video, i) => ({
+      ...video,
+      similarityScore: relatedRows[i].similarityScore,
+      sharedStems: []
+    }));
+
+    res.json({
+      video: currentVideo,
+      relatedVideos
+    });
+  } catch (error) {
+    console.error('Error getting video info:', error);
+    res.status(500).json({ error: 'Error getting video info' });
   }
-  
-  // Find related items based on shared stems, filtered by same file type
-  const relatedVideos = videos
-    .filter(v => v.filename !== filename) // Exclude current item
-    .filter(v => v.fileType === currentVideo.fileType) // Only same file type
-    .map(video => {
-      // Calculate similarity score based on shared stems
-      const sharedStems = video.stems.filter(stem => 
-        currentVideo.stems.includes(stem)
-      );
-      const similarityScore = sharedStems.length;
-      
-      return {
-        ...video,
-        similarityScore,
-        sharedStems
-      };
-    })
-    .filter(video => video.similarityScore > 0) // Only items with at least one shared stem
-    .sort((a, b) => b.similarityScore - a.similarityScore) // Sort by similarity
-    .slice(0, 20); // Limit to 20 related items
-  
-  res.json({
-    video: currentVideo,
-    relatedVideos
-  });
 });
 
 // Serve the video page
@@ -1221,17 +2125,26 @@ app.get('/', (req, res) => {
 
 // Start the server
 app.listen(PORT, () => {
-  // Load date cache on startup (before indexing)
-  loadDateCache();
-  
+  // Initialize database
+  initializeDatabase();
+
+  // Scan media path and populate database
+  scanAndPopulateDatabase();
+
   console.log(`Server running at http://localhost:${PORT}`);
-  console.log(`Base path: ${BASE_PATH}`);
-  console.log(`Filelist: ${FILELIST_PATH}`);
-  
-  // Index all file dates on startup (async, non-blocking, after server starts)
-  indexAllFileDates().catch(error => {
-    console.error('Error during startup date indexing:', error);
-  });
+  console.log(`Media path: ${BASE_PATH}`);
+  console.log(`Database: ${DB_FILE}`);
+
+  // Run background jobs one at a time so the Pi is not overloaded
+  (async () => {
+    try {
+      await detectAllVideoResolutions();
+      await generateMissingThumbnails();
+      await deduplicateFiles();
+    } catch (error) {
+      console.error('Error during startup maintenance:', error);
+    }
+  })();
 });
 
 

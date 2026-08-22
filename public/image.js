@@ -70,7 +70,7 @@ async function loadImagePage() {
         }
         
         // Set page title
-        const systemName = document.getElementById('systemName')?.textContent || 'HomeTube';
+        const systemName = document.getElementById('systemName')?.textContent || 'Movie Tube';
         document.title = `${image.displayName} - ${systemName}`;
         
         // Display image info
@@ -78,6 +78,7 @@ async function loadImagePage() {
         if (titleElement) {
             titleElement.textContent = image.displayName;
         }
+        bindFavoriteButton('favoriteButton', image.filename, image.favorited);
         
         const viewsElement = document.getElementById('imageViews');
         if (viewsElement) {
@@ -166,26 +167,19 @@ function displayRelatedImages(images) {
         return;
     }
     
-    container.innerHTML = images.map(image => {
-        const ext = image.filename.toLowerCase().split('.').pop();
-        const isImage = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext);
-        const overlayIcon = isImage ? '🖼️' : '▶';
-        
-        return `
+    container.innerHTML = images.map(image => `
         <div class="related-video-item" onclick="navigateToImage('${encodeURIComponent(image.filename)}')">
             <div class="related-video-thumbnail">
                 <img src="${escapeHtml(image.thumbnailPath)}" alt="${escapeHtml(image.displayName)}"
+                     loading="lazy" decoding="async" width="148" height="84"
                      onerror="this.style.display='none'; this.parentElement.classList.add('no-thumbnail');">
-                <div class="play-overlay-small">${overlayIcon}</div>
             </div>
             <div class="related-video-info">
                 <div class="related-video-title">${escapeHtml(image.displayName)}</div>
-                <div class="related-video-channel">${document.getElementById('systemName')?.textContent || 'HomeTube'}</div>
                 <div class="related-video-meta">Related image</div>
             </div>
         </div>
-        `;
-    }).join('');
+    `).join('');
 }
 
 // Navigate to file page (make it global, uses smart routing like app.js)
@@ -198,12 +192,12 @@ window.navigateToImage = function(filename) {
     const pdfExtensions = ['pdf'];
     
     if (imageExtensions.includes(ext)) {
-        window.location.href = `/image/${encodedFilename}`;
+        window.open(`/image/${encodedFilename}`, '_blank');
     } else if (pdfExtensions.includes(ext)) {
-        window.location.href = `/pdf/${encodedFilename}`;
+        window.open(`/pdf/${encodedFilename}`, '_blank');
     } else {
         // Default to video page
-        window.location.href = `/video/${encodedFilename}`;
+        window.open(`/video/${encodedFilename}`, '_blank');
     }
 };
 
@@ -304,6 +298,21 @@ document.addEventListener('keydown', function(event) {
         }
     }
 });
+
+function copyPageLink(button) {
+    const url = window.location.href;
+    const done = () => {
+        if (!button) return;
+        const original = button.textContent;
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = original; }, 1400);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(done).catch(() => window.prompt('Copy this link', url));
+    } else {
+        window.prompt('Copy this link', url);
+    }
+}
 
 // Initialize page
 if (document.readyState === 'loading') {

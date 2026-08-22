@@ -1,3 +1,4 @@
 #!/bin/sh
 
+export UV_THREADPOOL_SIZE=8
 npm i && npm start

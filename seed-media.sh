@@ -113,16 +113,26 @@ if [ -f "$CONFIG_FILE" ]; then
     echo -e "${YELLOW}Updating existing $CONFIG_FILE${NC}"
     # Use jq if available, otherwise use sed/awk
     if command -v jq &> /dev/null; then
-        jq ".videoBasePath = \"$MEDIA_PATH\"" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+        # Try to update mediaConfigPath first, then videoBasePath for backward compatibility
+        jq "if .mediaConfigPath then .mediaConfigPath = \"$MEDIA_PATH\" else .videoBasePath = \"$MEDIA_PATH\" end" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+        # Also add mediaConfigPath if it doesn't exist
+        jq ".mediaConfigPath = \"$MEDIA_PATH\"" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     else
-        # Fallback: use sed to update the path
-        # This is a simple approach - assumes the JSON structure
+        # Fallback: use sed to update the path (prefer mediaConfigPath, fallback to videoBasePath)
         if [[ "$OSTYPE" == "darwin"* ]]; then
             # macOS uses different sed syntax
-            sed -i '' "s|\"videoBasePath\": \".*\"|\"videoBasePath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
+            if grep -q "mediaConfigPath" "$CONFIG_FILE"; then
+                sed -i '' "s|\"mediaConfigPath\": \".*\"|\"mediaConfigPath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
+            else
+                sed -i '' "s|\"videoBasePath\": \".*\"|\"mediaConfigPath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
+            fi
         else
             # Linux sed
-            sed -i "s|\"videoBasePath\": \".*\"|\"videoBasePath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
+            if grep -q "mediaConfigPath" "$CONFIG_FILE"; then
+                sed -i "s|\"mediaConfigPath\": \".*\"|\"mediaConfigPath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
+            else
+                sed -i "s|\"videoBasePath\": \".*\"|\"mediaConfigPath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
+            fi
         fi
     fi
 else
@@ -132,20 +142,20 @@ else
         cp "$CONFIG_EXAMPLE" "$CONFIG_FILE"
         # Update the path
         if command -v jq &> /dev/null; then
-            jq ".videoBasePath = \"$MEDIA_PATH\"" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+            jq ".mediaConfigPath = \"$MEDIA_PATH\"" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
         else
             if [[ "$OSTYPE" == "darwin"* ]]; then
-                sed -i '' "s|\"videoBasePath\": \".*\"|\"videoBasePath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
+                sed -i '' "s|\"mediaConfigPath\": \".*\"|\"mediaConfigPath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
             else
-                sed -i "s|\"videoBasePath\": \".*\"|\"videoBasePath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
+                sed -i "s|\"mediaConfigPath\": \".*\"|\"mediaConfigPath\": \"$MEDIA_PATH\"|" "$CONFIG_FILE"
             fi
         fi
     else
         # Create from scratch
         cat > "$CONFIG_FILE" << EOF
 {
-  "systemName": "HomeTube",
-  "videoBasePath": "$MEDIA_PATH"
+  "systemName": "Movie Tube",
+  "mediaConfigPath": "$MEDIA_PATH"
 }
 EOF
     fi
@@ -155,7 +165,7 @@ echo -e "${GREEN}✓ Configuration updated${NC}"
 echo ""
 echo -e "${GREEN}Summary:${NC}"
 echo "  - $OUTPUT_FILE: $FILE_COUNT files"
-echo "  - $CONFIG_FILE: videoBasePath = $MEDIA_PATH"
+echo "  - $CONFIG_FILE: mediaConfigPath = $MEDIA_PATH"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
 echo "  1. Review $OUTPUT_FILE to ensure all files are correct"

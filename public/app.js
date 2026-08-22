@@ -5,11 +5,15 @@ let currentFileType = null; // 'video', 'pdf', 'image', or null for all
 let currentFilterMode = 'OR';
 let currentDateFrom = null;
 let currentDateTo = null;
-let videosPerPage = 12;
+let currentFavorites = false;
+let videosPerPage = 24;
 let allStems = []; // Store all stems for suggestions
+let stemsExpanded = false;
+const STEM_SIDEBAR_LIMIT = 40;
 let dateRange = { minDate: null, maxDate: null };
 let dateCounts = {}; // Store file counts per date
 let dateRangePicker = null; // Flatpickr instance
+let isClearingDateFilter = false; // Flag to prevent infinite recursion
 
 // Parse search query for AND/OR logic
 function parseSearchQuery(query) {
@@ -69,18 +73,30 @@ document.addEventListener('DOMContentLoaded', () => {
         videosPerPage = parseInt(videosPerPageSelect.value);
     }
     
-    // Set "All" button as active by default
-    const allButton = document.getElementById('fileType-all');
-    if (allButton) {
-        allButton.classList.add('active');
-    }
-    
+    const sidebar = document.getElementById('sidebar');
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+    const closeSidebar = () => {
+        sidebar?.classList.remove('open');
+        document.body.classList.remove('sidebar-open');
+    };
+    sidebarToggle?.addEventListener('click', () => {
+        sidebar?.classList.toggle('open');
+        document.body.classList.toggle('sidebar-open');
+    });
+    sidebarBackdrop?.addEventListener('click', closeSidebar);
+
+    loadProfile();
+
     // Check for search parameter in URL
     const urlParams = new URLSearchParams(window.location.search);
     const searchParam = urlParams.get('search');
+    const favoritesParam = urlParams.get('favorites');
     if (searchParam) {
         document.getElementById('searchInput').value = searchParam;
         performSearch(searchParam);
+    } else if (favoritesParam === '1') {
+        showFavorites();
     } else {
         loadVideos();
     }
@@ -143,8 +159,24 @@ document.addEventListener('DOMContentLoaded', () => {
 // Load all stems
 async function loadStems() {
     try {
-        const response = await fetch('/api/stems');
+        // Build query string with date range if active
+        let url = '/api/stems';
+        const params = new URLSearchParams();
+        if (currentDateFrom) {
+            params.append('dateFrom', currentDateFrom);
+        }
+        if (currentDateTo) {
+            params.append('dateTo', currentDateTo);
+        }
+        if (params.toString()) {
+            url += '?' + params.toString();
+        }
+        
+        console.log('Loading stems with URL:', url, 'DateFrom:', currentDateFrom, 'DateTo:', currentDateTo);
+        
+        const response = await fetch(url);
         const data = await response.json();
+        console.log('Stems response:', data.stems.length, 'stems');
         allStems = data.stems; // Store for suggestions
         displayStems(data.stems);
     } catch (error) {
@@ -281,16 +313,32 @@ function performSearchFromInput() {
 
 // Change videos per page
 function changeVideosPerPage(newLimit) {
-    videosPerPage = parseInt(newLimit);
-    currentPage = 1; // Reset to first page
-    loadVideos(1, currentStem, currentFilterMode);
+    videosPerPage = parseInt(newLimit, 10);
+    currentPage = 1;
+    loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, currentDateFrom, currentDateTo);
 }
 
 // Load resolutions
 async function loadResolutions() {
     try {
-        const response = await fetch('/api/resolutions');
+        // Build query string with date range if active
+        let url = '/api/resolutions';
+        const params = new URLSearchParams();
+        if (currentDateFrom) {
+            params.append('dateFrom', currentDateFrom);
+        }
+        if (currentDateTo) {
+            params.append('dateTo', currentDateTo);
+        }
+        if (params.toString()) {
+            url += '?' + params.toString();
+        }
+        
+        console.log('Loading resolutions with URL:', url, 'DateFrom:', currentDateFrom, 'DateTo:', currentDateTo);
+        
+        const response = await fetch(url);
         const data = await response.json();
+        console.log('Resolutions response:', data.resolutions);
         displayResolutions(data.resolutions);
     } catch (error) {
         console.error('Error loading resolutions:', error);
@@ -310,11 +358,23 @@ function displayResolutions(resolutions) {
         resolutionMap[res.resolution] = res.count;
     });
     
-    // Display all predefined resolutions, even if count is 0
-    resolutionsList.innerHTML = predefinedResolutions.map(res => {
+    // If date filter is active, hide resolutions with 0 count
+    const hasDateFilter = currentDateFrom || currentDateTo;
+    
+    // Display resolutions - hide those with 0 count if date filter is active
+    const filteredResolutions = hasDateFilter 
+        ? predefinedResolutions.filter(res => (resolutionMap[res] || 0) > 0)
+        : predefinedResolutions;
+    
+    if (filteredResolutions.length === 0) {
+        resolutionsList.innerHTML = '<p class="loading" style="color: #888;">No resolutions found for this date range</p>';
+        return;
+    }
+    
+    resolutionsList.innerHTML = filteredResolutions.map(res => {
         const count = resolutionMap[res] || 0;
         return `
-        <div class="stem-tag" data-resolution="${res}" onclick="filterByResolution('${res}')" ${count === 0 ? 'style="opacity: 0.5;"' : ''}>
+        <div class="stem-tag" data-resolution="${res}" onclick="filterByResolution('${res}')">
             ${res} <span class="stem-count">(${count})</span>
         </div>
     `;
@@ -335,7 +395,7 @@ function filterByFileType(fileType) {
         activeButton.classList.add('active');
     }
     
-    loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType);
+    loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, currentDateFrom, currentDateTo);
 }
 
 // Filter by resolution
@@ -374,21 +434,42 @@ async function detectVideoResolution(filename) {
 // Display stems in sidebar
 function displayStems(stems) {
     const stemsList = document.getElementById('stemsList');
-    
-    if (stems.length === 0) {
-        stemsList.innerHTML = '<p class="loading">No stems found</p>';
+    const hasDateFilter = currentDateFrom || currentDateTo;
+    const filteredStems = hasDateFilter
+        ? stems.filter(s => s.count > 0)
+        : stems;
+
+    if (filteredStems.length === 0) {
+        stemsList.innerHTML = '<p class="loading">No tags found</p>';
         return;
     }
-    
-    stemsList.innerHTML = stems.map(stem => `
-        <div class="stem-tag" data-stem="${stem.stem}" onclick="filterByStem('${stem.stem}')">
-            ${stem.stem} <span class="stem-count">(${stem.count})</span>
-        </div>
+
+    const visible = stemsExpanded ? filteredStems : filteredStems.slice(0, STEM_SIDEBAR_LIMIT);
+    let html = visible.map(stem => `
+        <button type="button" class="stem-tag" data-stem="${escapeHtml(stem.stem)}" onclick="filterByStem('${escapeHtml(stem.stem)}')">
+            ${escapeHtml(stem.stem)} <span class="stem-count">${stem.count}</span>
+        </button>
     `).join('');
+
+    if (filteredStems.length > STEM_SIDEBAR_LIMIT) {
+        const remaining = filteredStems.length - STEM_SIDEBAR_LIMIT;
+        html += `<button type="button" class="show-more-stems" onclick="toggleStemsExpanded()">${stemsExpanded ? 'Show fewer tags' : `Show ${remaining} more`}</button>`;
+    }
+
+    stemsList.innerHTML = html;
+}
+
+function toggleStemsExpanded() {
+    stemsExpanded = !stemsExpanded;
+    displayStems(allStems);
 }
 
 // Load videos with pagination and filtering
 async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null, fileType = null, dateFrom = null, dateTo = null) {
+    const videosGrid = document.getElementById('videosGrid');
+    if (videosGrid && !videosGrid.querySelector('.skeleton-card')) {
+        videosGrid.innerHTML = '<div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>';
+    }
     try {
         const params = new URLSearchParams({
             page: page,
@@ -415,13 +496,17 @@ async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null,
         if (dateTo) {
             params.append('dateTo', dateTo);
         }
+
+        if (currentFavorites) {
+            params.append('favorites', '1');
+        }
         
         const response = await fetch(`/api/videos?${params.toString()}`);
         const data = await response.json();
         
         displayVideos(data.videos);
         displayPagination(data.pagination);
-        updateFilterInfo(stem, data.pagination.totalVideos, mode, resolution, fileType, dateFrom, dateTo);
+        updateFilterInfo(stem, data.pagination.totalVideos, mode, resolution, fileType, dateFrom, dateTo, currentFavorites);
         
         currentPage = page;
         currentStem = stem;
@@ -440,59 +525,44 @@ async function loadVideos(page = 1, stem = null, mode = 'OR', resolution = null,
 // Display videos in grid
 function displayVideos(videos) {
     const videosGrid = document.getElementById('videosGrid');
-    
+
     if (videos.length === 0) {
-        videosGrid.innerHTML = '<p class="loading">No videos found</p>';
+        videosGrid.innerHTML = currentFavorites
+            ? '<div class="empty-state">No favorites yet. Tap the heart on any file to save it to your profile.</div>'
+            : '<div class="empty-state">No files match these filters</div>';
         return;
     }
-    
+
     videosGrid.innerHTML = videos.map(video => {
-        // Detect resolution if unknown (only for videos)
-        if (video.fileType === 'video' && video.resolution === 'Unknown') {
-            detectVideoResolution(video.filename);
-        }
-        
         const isPDF = video.fileType === 'pdf';
         const isImage = video.fileType === 'image';
-        let overlayIcon = '▶';
-        let overlayClass = 'play-overlay';
-        if (isPDF) {
-            overlayIcon = '📄';
-            overlayClass = 'pdf-overlay';
-        }
-        // Removed image overlay - images don't show icon on hover
-        
+        const overlayClass = isPDF ? 'pdf-overlay' : 'play-overlay';
         const videoFilename = encodeURIComponent(video.filename);
-        const videoUrl = `/api/video/${videoFilename}`;
-        
+        const typeLabel = isPDF ? 'PDF' : (isImage ? 'Image' : 'Video');
+        const stems = (video.stems || []).slice(0, 3);
+
         return `
-        <div class="video-card" 
+        <article class="video-card"
              data-filename="${escapeHtml(video.filename)}"
              data-file-type="${video.fileType}"
-             data-video-url="${videoUrl}"
-             onclick="navigateToVideo('${videoFilename}')"
-             onmouseenter="handleVideoHover(this)"
-             onmouseleave="handleVideoLeave(this)">
+             onclick="navigateToVideo('${videoFilename}')">
             <div class="video-thumbnail">
-                <img src="${escapeHtml(video.thumbnailPath)}" alt="${escapeHtml(video.displayName)}" 
+                <img src="${escapeHtml(video.thumbnailPath)}" alt="${escapeHtml(video.displayName)}"
+                     loading="lazy" decoding="async" width="480" height="270"
                      onerror="this.style.display='none'; this.parentElement.classList.add('no-thumbnail');">
-                ${!isImage ? `<div class="${overlayClass}">${overlayIcon}</div>` : ''}
+                ${!isImage ? `<div class="${overlayClass}"></div>` : ''}
                 ${video.resolution && video.resolution !== 'Unknown' ? `<div class="video-resolution-badge">${video.resolution}</div>` : ''}
-                ${isPDF ? '<div class="file-type-badge">PDF</div>' : ''}
-                ${isImage ? '<div class="file-type-badge">Image</div>' : ''}
-                <div class="video-preview-container hidden"></div>
+                <div class="file-type-badge" data-type="${video.fileType}">${typeLabel}</div>
+                ${favoriteButtonHtml(video.filename, video.favorited)}
             </div>
             <div class="video-info">
                 <div class="video-title">${escapeHtml(video.displayName)}</div>
-                ${video.resolution && video.resolution !== 'Unknown' ? `<div class="video-resolution-text">${video.resolution}</div>` : ''}
-                ${video.date ? `<div class="video-date ${video.dateSource === 'metadata' ? 'date-from-metadata' : 'date-from-file'}">${formatVideoDate(video.date)}</div>` : ''}
+                ${video.date ? `<div class="video-date">${formatVideoDate(video.date)}</div>` : ''}
                 <div class="video-stems">
-                    ${video.stems.map(stem => 
-                        `<span class="video-stem">${escapeHtml(stem)}</span>`
-                    ).join('')}
+                    ${stems.map(stem => `<span class="video-stem">${escapeHtml(stem)}</span>`).join('')}
                 </div>
             </div>
-        </div>
+        </article>
     `;
     }).join('');
 }
@@ -500,34 +570,67 @@ function displayVideos(videos) {
 // Display pagination controls
 function displayPagination(pagination) {
     const paginationDiv = document.getElementById('pagination');
-    
+
     if (pagination.totalPages <= 1) {
-        paginationDiv.innerHTML = '';
+        paginationDiv.innerHTML = pagination.totalVideos
+            ? `<span class="page-info">${pagination.totalVideos} items</span>`
+            : '';
         return;
     }
-    
+
+    const pages = getVisiblePages(pagination.currentPage, pagination.totalPages);
     const prevDisabled = pagination.currentPage === 1;
     const nextDisabled = pagination.currentPage === pagination.totalPages;
-    
+    const buttons = pages.map(page => {
+        if (page === '…') {
+            return '<span class="page-info">…</span>';
+        }
+        const active = page === pagination.currentPage ? 'active' : '';
+        return `<button type="button" class="${active}" onclick="goToPage(${page})">${page}</button>`;
+    }).join('');
+
     paginationDiv.innerHTML = `
-        <button onclick="goToPage(${pagination.currentPage - 1})" ${prevDisabled ? 'disabled' : ''}>
-            Previous
-        </button>
-        <span class="page-info">
-            Page ${pagination.currentPage} of ${pagination.totalPages} 
-            (${pagination.totalVideos} videos)
-        </span>
-        <button onclick="goToPage(${pagination.currentPage + 1})" ${nextDisabled ? 'disabled' : ''}>
-            Next
-        </button>
+        <button type="button" onclick="goToPage(${pagination.currentPage - 1})" ${prevDisabled ? 'disabled' : ''}>Prev</button>
+        ${buttons}
+        <button type="button" onclick="goToPage(${pagination.currentPage + 1})" ${nextDisabled ? 'disabled' : ''}>Next</button>
+        <span class="page-info">${pagination.totalVideos} items</span>
     `;
 }
 
+function getVisiblePages(current, total) {
+    if (total <= 7) {
+        return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    const pages = new Set([1, total, current, current - 1, current + 1]);
+    const sorted = [...pages].filter(p => p >= 1 && p <= total).sort((a, b) => a - b);
+    const result = [];
+    for (let i = 0; i < sorted.length; i++) {
+        if (i > 0 && sorted[i] - sorted[i - 1] > 1) {
+            result.push('…');
+        }
+        result.push(sorted[i]);
+    }
+    return result;
+}
+
 // Update filter info display
-function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fileType = null, dateFrom = null, dateTo = null) {
+function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fileType = null, dateFrom = null, dateTo = null, favorites = false) {
     const filterInfo = document.getElementById('filterInfo');
     
     const filters = [];
+
+    if (favorites) {
+        filters.push('<strong>Favorites</strong>');
+    }
+
+    const favoritesChip = document.getElementById('filter-favorites');
+    const favoritesHeader = document.getElementById('favoritesHeaderBtn');
+    if (favoritesChip) {
+        favoritesChip.classList.toggle('active', !!favorites);
+    }
+    if (favoritesHeader) {
+        favoritesHeader.classList.toggle('active', !!favorites);
+    }
     
     if (fileType && fileType !== 'all') {
         const fileTypeLabels = {
@@ -588,7 +691,7 @@ function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fil
     if (filters.length > 0) {
         filterInfo.classList.remove('hidden');
         filterInfo.innerHTML = `
-            <span>Filtered by: ${filters.join(', ')} (${totalVideos} videos)</span>
+            <span>Filtered by: ${filters.join(', ')} (${totalVideos} items)</span>
             <button class="clear-filter" onclick="clearFilter()">Clear Filter</button>
         `;
     } else {
@@ -608,6 +711,28 @@ function filterByStem(stem) {
     filterByStems(stem, 'OR');
 }
 
+function showFavorites() {
+    currentFavorites = !currentFavorites;
+    currentPage = 1;
+    loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, currentDateFrom, currentDateTo);
+}
+
+async function loadProfile() {
+    try {
+        const response = await fetch('/api/me', { credentials: 'include' });
+        if (!response.ok) return;
+        const data = await response.json();
+        const chip = document.getElementById('userChip');
+        if (chip && data.username) {
+            chip.hidden = false;
+            chip.textContent = data.username;
+        }
+        updateFavoriteCount(data.favoriteCount);
+    } catch (error) {
+        console.error('Error loading profile:', error);
+    }
+}
+
 // Clear filter
 function clearFilter() {
     currentPage = 1;
@@ -617,6 +742,7 @@ function clearFilter() {
     currentFilterMode = 'OR';
     currentDateFrom = null;
     currentDateTo = null;
+    currentFavorites = false;
     
     // Reset file type button to "All"
     document.querySelectorAll('.file-type-tag').forEach(btn => {
@@ -843,12 +969,12 @@ function navigateToVideo(filename) {
     const pdfExtensions = ['pdf'];
     
     if (imageExtensions.includes(ext)) {
-        window.location.href = `/image/${encodedFilename}`;
+        window.open(`/image/${encodedFilename}`, '_blank');
     } else if (pdfExtensions.includes(ext)) {
-        window.location.href = `/pdf/${encodedFilename}`;
+        window.open(`/pdf/${encodedFilename}`, '_blank');
     } else {
         // Default to video page
-        window.location.href = `/video/${encodedFilename}`;
+        window.open(`/video/${encodedFilename}`, '_blank');
     }
 }
 
@@ -935,9 +1061,11 @@ function closeVideoModal() {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         const modal = document.getElementById('videoModal');
-        if (!modal.classList.contains('hidden')) {
+        if (modal && !modal.classList.contains('hidden')) {
             closeVideoModal();
         }
+        document.getElementById('sidebar')?.classList.remove('open');
+        document.body.classList.remove('sidebar-open');
     }
 });
 
@@ -1194,6 +1322,10 @@ function filterByDateTree(year, month, day) {
         dateRangePicker.clear();
     }
     
+    // Reload stems and resolutions with date filter
+    loadStems();
+    loadResolutions();
+    
     // Load videos with date filter
     loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, dateFrom, dateTo);
 }
@@ -1216,7 +1348,7 @@ function filterByDate(filterType) {
         // Hide date inputs
         const dateInputs = document.getElementById('dateRangeInputs');
         if (dateInputs) {
-            dateInputs.style.display = 'none';
+            dateInputs.hidden = true;
         }
         
         // Clear date picker
@@ -1229,7 +1361,7 @@ function filterByDate(filterType) {
         // Show date inputs
         const dateInputs = document.getElementById('dateRangeInputs');
         if (dateInputs) {
-            dateInputs.style.display = 'block';
+            dateInputs.hidden = false;
         }
         
         // Update button states
@@ -1301,6 +1433,10 @@ function initializeDateRangePicker() {
                     customButton.classList.add('active');
                 }
                 
+                // Reload stems and resolutions with date filter
+                loadStems();
+                loadResolutions();
+                
                 // Load videos with date filter
                 loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, dateFrom, dateTo);
             } else if (selectedDates.length === 1) {
@@ -1322,11 +1458,17 @@ function initializeDateRangePicker() {
                     customButton.classList.add('active');
                 }
                 
+                // Reload stems and resolutions with date filter
+                loadStems();
+                loadResolutions();
+                
                 // Load videos with date filter
                 loadVideos(1, currentStem, currentFilterMode, currentResolution, currentFileType, dateFrom, dateTo);
             } else if (selectedDates.length === 0) {
-                // Dates cleared - clear filter
-                clearDateFilter();
+                // Dates cleared - only clear if not already clearing (prevent infinite recursion)
+                if (!isClearingDateFilter) {
+                    clearDateFilter();
+                }
             }
         },
         onReady: function(selectedDates, dateStr, instance) {
@@ -1439,11 +1581,19 @@ function applyDateFilter() {
 }
 
 function clearDateFilter() {
+    // Set flag to prevent infinite recursion
+    isClearingDateFilter = true;
+    
     if (dateRangePicker) {
         dateRangePicker.clear();
     }
     
     filterByDate('all');
+    
+    // Reset flag after a short delay to allow onChange to complete
+    setTimeout(() => {
+        isClearingDateFilter = false;
+    }, 100);
 }
 
 function formatDate(dateString) {
@@ -1458,9 +1608,16 @@ function formatVideoDate(dateString) {
     return date.toLocaleDateString('en-US', { 
         year: 'numeric', 
         month: 'short', 
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
+        day: 'numeric'
     });
+}
+
+async function logout() {
+    try {
+        await fetch('/api/logout', { method: 'POST' });
+    } catch (error) {
+        console.error('Logout failed:', error);
+    }
+    window.location.href = '/login';
 }
 

@@ -70,7 +70,7 @@ async function loadPdfPage() {
         }
         
         // Set page title
-        const systemName = document.getElementById('systemName')?.textContent || 'HomeTube';
+        const systemName = document.getElementById('systemName')?.textContent || 'Movie Tube';
         document.title = `${pdf.displayName} - ${systemName}`;
         
         // Display PDF info
@@ -78,6 +78,7 @@ async function loadPdfPage() {
         if (titleElement) {
             titleElement.textContent = pdf.displayName;
         }
+        bindFavoriteButton('favoriteButton', pdf.filename, pdf.favorited);
         
         const viewsElement = document.getElementById('pdfViews');
         if (viewsElement) {
@@ -229,12 +230,11 @@ function displayRelatedPdfs(pdfs) {
         <div class="related-video-item" onclick="navigateToPdf('${encodeURIComponent(pdf.filename)}')">
             <div class="related-video-thumbnail">
                 <img src="${escapeHtml(pdf.thumbnailPath)}" alt="${escapeHtml(pdf.displayName)}"
+                     loading="lazy" decoding="async" width="148" height="84"
                      onerror="this.style.display='none'; this.parentElement.classList.add('no-thumbnail');">
-                <div class="play-overlay-small">📄</div>
             </div>
             <div class="related-video-info">
                 <div class="related-video-title">${escapeHtml(pdf.displayName)}</div>
-                <div class="related-video-channel">${document.getElementById('systemName')?.textContent || 'HomeTube'}</div>
                 <div class="related-video-meta">Related PDF</div>
             </div>
         </div>
@@ -251,12 +251,12 @@ window.navigateToPdf = function(filename) {
     const pdfExtensions = ['pdf'];
     
     if (imageExtensions.includes(ext)) {
-        window.location.href = `/image/${encodedFilename}`;
+        window.open(`/image/${encodedFilename}`, '_blank');
     } else if (pdfExtensions.includes(ext)) {
-        window.location.href = `/pdf/${encodedFilename}`;
+        window.open(`/pdf/${encodedFilename}`, '_blank');
     } else {
         // Default to video page
-        window.location.href = `/video/${encodedFilename}`;
+        window.open(`/video/${encodedFilename}`, '_blank');
     }
 };
 
@@ -329,6 +329,21 @@ console.warn = function(...args) {
     // Call original warn for other messages
     originalWarn.apply(console, args);
 };
+
+function copyPageLink(button) {
+    const url = window.location.href;
+    const done = () => {
+        if (!button) return;
+        const original = button.textContent;
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = original; }, 1400);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(done).catch(() => window.prompt('Copy this link', url));
+    } else {
+        window.prompt('Copy this link', url);
+    }
+}
 
 // Initialize page
 if (document.readyState === 'loading') {

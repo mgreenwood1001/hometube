@@ -10,6 +10,10 @@ resolutions/
 resolution-cache.json
 config.json
 date-cache.json
+hash-cache.json
+media.db
+media.db-shm
+media.db-wal
 
 # Release packages
 *.tar.gz

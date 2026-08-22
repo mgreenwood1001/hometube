@@ -1,5 +1,5 @@
 {
-  "systemName": "HomeTube",
-  "videoBasePath": "/path/to/your/videos"
+  "systemName": "Movie Tube",
+  "mediaConfigPath": "/path/to/your/media"
 }
 

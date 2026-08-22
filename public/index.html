@@ -3,134 +3,125 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title id="pageTitle">HomeTube - Video Browser</title>
+    <title id="pageTitle">Movie Tube</title>
     <link rel="stylesheet" href="style.css">
-    <!-- Video.js CSS -->
-    <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
-    <!-- Flatpickr CSS for date range picker -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
 </head>
-<body width="100%">
+<body>
     <header class="header">
         <div class="header-content">
             <a href="/" class="logo-link">
-                <img src="/images/logo.png" alt="HomeTube" class="logo-image" id="logoAlt">
-                <span class="logo-text" id="systemName">HomeTube</span>
+                <img src="/images/logo.png" alt="Movie Tube" class="logo-image">
+                <span class="logo-text" id="systemName">Movie Tube</span>
             </a>
+            <button class="icon-btn sidebar-toggle" id="sidebarToggle" type="button" aria-label="Toggle filters" title="Filters">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4V6zm3 5h10v2H7v-2zm3 5h4v2h-4v-2z"/></svg>
+            </button>
             <div class="search-container">
-                <input type="text" id="searchInput" size="35" placeholder="Search (e.g., 'cooking AND recipe' or 'travel OR adventure')" class="search-input">
-                <button class="search-button" onclick="performSearchFromInput()" title="Search">
-                    <span class="search-icon">🔍</span>
-                </button>
+                <svg class="search-leading-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                <input type="text" id="searchInput" placeholder="Search titles and tags" class="search-input" autocomplete="off">
+                <button class="search-button" type="button" onclick="performSearchFromInput()" title="Search">Search</button>
                 <div id="searchSuggestions" class="search-suggestions hidden"></div>
             </div>
+            <button class="icon-btn" id="favoritesHeaderBtn" type="button" onclick="showFavorites()" title="Favorites" aria-label="Favorites">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12.1 21.35 10.6 20C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.6 11.54l-1.3 1.31z"/></svg>
+                <span class="count-badge" id="favoriteCountBadge" hidden>0</span>
+            </button>
+            <span class="user-chip" id="userChip" hidden></span>
+            <button class="icon-btn" type="button" onclick="logout()" title="Log out" aria-label="Log out">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M10 17v-3H3v-4h7V7l5 5-5 5zm9-14H5c-1.1 0-2 .9-2 2v3h2V5h14v14H5v-3H3v3c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
+            </button>
         </div>
     </header>
 
     <div class="container">
-        <aside class="sidebar">
-            <h2>Date Range</h2>
-            <div id="dateFilter" class="date-filter">
-                <button class="stem-tag date-filter-tag active" onclick="filterByDate('all')" id="dateFilter-all">
-                    All Time
-                </button>
-                <div class="date-range-inputs" id="dateRangeInputs" style="display: none;">
-                    <input type="text" id="dateRangePicker" placeholder="Click to select date range" style="cursor: pointer;">
-                    <button class="date-clear-button" onclick="clearDateFilter()">Clear</button>
+        <aside class="sidebar" id="sidebar">
+            <details class="filter-section" open>
+                <summary>Library</summary>
+                <div id="fileTypeList" class="chip-row">
+                    <button class="chip file-type-tag active" type="button" onclick="filterByFileType('all')" id="fileType-all">All</button>
+                    <button class="chip file-type-tag" type="button" onclick="filterByFileType('video')" id="fileType-video">Videos</button>
+                    <button class="chip file-type-tag" type="button" onclick="filterByFileType('image')" id="fileType-image">Images</button>
+                    <button class="chip file-type-tag" type="button" onclick="filterByFileType('pdf')" id="fileType-pdf">PDFs</button>
+                    <button class="chip favorite-filter-tag" type="button" onclick="showFavorites()" id="filter-favorites">Favorites</button>
                 </div>
-                <button class="stem-tag date-filter-tag" onclick="showDateRangeInputs()" id="dateFilter-custom">
-                    Custom Range
-                </button>
-            </div>
-            <h2 style="margin-top: 1.5rem;">Date Tree</h2>
-            <div id="dateTree" class="date-tree">
-                <p class="loading">Loading dates...</p>
-            </div>
-            <h2 style="margin-top: 1.5rem;">Type</h2>
-            <div id="fileTypeList" class="stems-list">
-                <div class="file-type-filter">
-                    <button class="stem-tag file-type-tag" onclick="filterByFileType('all')" id="fileType-all">
-                        All
-                    </button>
-                    <button class="stem-tag file-type-tag" onclick="filterByFileType('video')" id="fileType-video">
-                        Videos
-                    </button>
-                    <button class="stem-tag file-type-tag" onclick="filterByFileType('pdf')" id="fileType-pdf">
-                        PDFs
-                    </button>
-                    <button class="stem-tag file-type-tag" onclick="filterByFileType('image')" id="fileType-image">
-                        Images
-                    </button>
+            </details>
+
+            <details class="filter-section" open>
+                <summary>When</summary>
+                <div id="dateFilter" class="date-filter">
+                    <button class="chip date-filter-tag active" type="button" onclick="filterByDate('all')" id="dateFilter-all">All time</button>
+                    <button class="chip date-filter-tag" type="button" onclick="showDateRangeInputs()" id="dateFilter-custom">Custom range</button>
+                    <div class="date-range-inputs" id="dateRangeInputs" hidden>
+                        <input type="text" id="dateRangePicker" placeholder="Select dates" readonly>
+                        <button class="date-clear-button" type="button" onclick="clearDateFilter()">Clear</button>
+                    </div>
                 </div>
-            </div>
-            <h2 style="margin-top: 1.5rem;">Resolutions</h2>
-            <div id="resolutionsList" class="stems-list">
-                <p class="loading">Loading resolutions...</p>
-            </div>
-            <h2 style="margin-top: 1.5rem;">Categories</h2>
-            <div id="stemsList" class="stems-list">
-                <p class="loading">Loading stems...</p>
-            </div>
+            </details>
+
+            <details class="filter-section">
+                <summary>Date tree</summary>
+                <div id="dateTree" class="date-tree">
+                    <p class="loading">Loading dates...</p>
+                </div>
+            </details>
+
+            <details class="filter-section">
+                <summary>Resolution</summary>
+                <div id="resolutionsList" class="chip-list">
+                    <p class="loading">Loading resolutions...</p>
+                </div>
+            </details>
+
+            <details class="filter-section" open>
+                <summary>Tags</summary>
+                <div id="stemsList" class="chip-list">
+                    <p class="loading">Loading tags...</p>
+                </div>
+            </details>
         </aside>
 
         <main class="main-content">
             <div class="main-content-header">
-                <div class="filter-info" id="filterInfo"></div>
+                <div class="filter-info hidden" id="filterInfo"></div>
                 <div class="videos-per-page-selector">
-                    <label for="videosPerPageSelect">Videos per page:</label>
+                    <label for="videosPerPageSelect">Per page</label>
                     <select id="videosPerPageSelect" onchange="changeVideosPerPage(this.value)">
-                        <option value="10">10</option>
-                        <option value="25" selected>25</option>
-                        <option value="50">50</option>
-                        <option value="100">100</option>
+                        <option value="12">12</option>
+                        <option value="24" selected>24</option>
+                        <option value="48">48</option>
+                        <option value="96">96</option>
                     </select>
                 </div>
             </div>
-            
+
             <div class="videos-grid" id="videosGrid">
-                <p class="loading">Loading videos...</p>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
             </div>
 
             <div class="pagination" id="pagination"></div>
         </main>
     </div>
 
-    <!-- Video Player Modal -->
-    <div id="videoModal" class="video-modal hidden">
-        <div class="video-modal-overlay" onclick="closeVideoModal()"></div>
-        <div class="video-modal-content">
-            <button class="video-modal-close" onclick="closeVideoModal()">×</button>
-            <video
-                id="videoPlayer"
-                class="video-js vjs-big-play-centered"
-                controls
-                preload="auto"
-                data-setup="{}">
-                <p class="vjs-no-js">
-                    To view this video please enable JavaScript, and consider upgrading to a web browser that
-                    <a href="https://videojs.com/html5-video-support/" target="_blank">supports HTML5 video</a>.
-                </p>
-            </video>
-        </div>
-    </div>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-    <!-- Video.js JavaScript -->
-    <script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
-    <!-- Flatpickr JavaScript for date range picker -->
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.js"></script>
     <script>
-        // Load system configuration
         fetch('/api/config')
             .then(response => response.json())
             .then(config => {
-                const systemName = config.systemName || 'HomeTube';
+                const systemName = config.systemName || 'Movie Tube';
                 document.getElementById('systemName').textContent = systemName;
-                document.getElementById('logoAlt').alt = systemName;
-                document.getElementById('pageTitle').textContent = `${systemName} - Video Browser`;
+                document.getElementById('pageTitle').textContent = systemName;
             })
-            .catch(error => console.error('Error loading config:', error));
+            .catch(() => {});
     </script>
+    <script src="favorites.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
-
