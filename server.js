@@ -1393,6 +1393,19 @@ function parseStemList(stemFilter) {
   return String(stemFilter).toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
 }
 
+function searchTermClause(term) {
+  const normalized = String(term).toLowerCase().trim();
+  if (!normalized) return null;
+  const cleaned = normalized.replace(/[^a-z0-9]+/g, '');
+  const stemmed = cleaned ? stemmer.stem(cleaned) : '';
+  const stemValues = [...new Set([normalized, stemmed].filter(Boolean))];
+  const stemPlaceholders = stemValues.map(() => '?').join(',');
+  return {
+    sql: `(INSTR(LOWER(f.filename), ?) > 0 OR INSTR(LOWER(f.display_name), ?) > 0 OR f.id IN (SELECT file_id FROM stems WHERE stem IN (${stemPlaceholders})))`,
+    params: [normalized, normalized, ...stemValues]
+  };
+}
+
 function buildFileFilters({ fileType, resolution, dateFrom, dateTo, stems, mode, favoritesOnly, userId }) {
   const where = [];
   const params = [];
@@ -1414,13 +1427,13 @@ function buildFileFilters({ fileType, resolution, dateFrom, dateTo, stems, mode,
     params.push(dateTo);
   }
   if (stems && stems.length) {
-    const placeholders = stems.map(() => '?').join(',');
-    if (String(mode).toUpperCase() === 'AND') {
-      where.push(`f.id IN (SELECT file_id FROM stems WHERE stem IN (${placeholders}) GROUP BY file_id HAVING COUNT(DISTINCT stem) = ?)`);
-      params.push(...stems, stems.length);
-    } else {
-      where.push(`f.id IN (SELECT file_id FROM stems WHERE stem IN (${placeholders}))`);
-      params.push(...stems);
+    const clauses = stems.map(searchTermClause).filter(Boolean);
+    if (clauses.length) {
+      const joiner = String(mode).toUpperCase() === 'AND' ? ' AND ' : ' OR ';
+      where.push(`(${clauses.map(clause => clause.sql).join(joiner)})`);
+      for (const clause of clauses) {
+        params.push(...clause.params);
+      }
     }
   }
   if (favoritesOnly && userId) {
