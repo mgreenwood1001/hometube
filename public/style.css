@@ -433,6 +433,96 @@ a.icon-btn {
     font-weight: 700;
 }
 
+.actor-add-form {
+    display: flex;
+    gap: 0.35rem;
+    margin: 0 0 0.55rem;
+}
+
+.actor-add-form input {
+    flex: 1;
+    min-width: 0;
+    padding: 0.4rem 0.6rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 0.82rem;
+}
+
+.actor-add-form input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.actor-add-form button {
+    flex-shrink: 0;
+    padding: 0.4rem 0.7rem;
+    background: var(--accent);
+    color: #1a1406;
+    border: none;
+    border-radius: 999px;
+    font-weight: 650;
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+
+.actor-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.actor-row .actor-tag {
+    flex: 1;
+    min-width: 0;
+}
+
+.actor-edit,
+.actor-remove {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+}
+
+.actor-edit:hover,
+.actor-remove:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.actor-remove:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.video-actors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-top: 0.45rem;
+}
+
+.video-actor {
+    font-size: 0.72rem;
+    padding: 0.15rem 0.5rem;
+    background: var(--accent-dim);
+    border: 1px solid transparent;
+    border-radius: 999px;
+    color: var(--accent);
+    cursor: pointer;
+}
+
+.video-actor:hover {
+    border-color: var(--accent);
+}
+
 .stem-count {
     color: inherit;
     opacity: 0.7;

@@ -74,6 +74,17 @@
             </details>
 
             <details class="filter-section" open>
+                <summary>Actors</summary>
+                <form class="actor-add-form" onsubmit="addActor(event)">
+                    <input id="actorNameInput" type="text" maxlength="80" autocomplete="off" placeholder="Add a name from file names">
+                    <button type="submit">Add</button>
+                </form>
+                <div id="actorsList" class="chip-list">
+                    <p class="loading">Loading actors...</p>
+                </div>
+            </details>
+
+            <details class="filter-section" open>
                 <summary>Tags</summary>
                 <div id="stemsList" class="chip-list">
                     <p class="loading">Loading tags...</p>

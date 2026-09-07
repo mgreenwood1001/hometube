@@ -117,6 +117,12 @@ function initializeDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);
     CREATE INDEX IF NOT EXISTS idx_favorites_file ON favorites(file_id);
+
+    CREATE TABLE IF NOT EXISTS actors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      created_at INTEGER DEFAULT (strftime('%s', 'now'))
+    );
   `);
 
   console.log('Database initialized successfully');
@@ -329,6 +335,16 @@ function getThumbnailPath(filename) {
   // Create a safe filename for the thumbnail
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
   return path.join(THUMBNAILS_DIR, `${safeName}.jpg`);
+}
+
+function decodeFilenameParam(value) {
+  if (value == null) return '';
+  const raw = String(value);
+  try {
+    return decodeURIComponent(raw);
+  } catch (error) {
+    return raw;
+  }
 }
 
 function resolveLibraryPath(filename) {
@@ -1373,6 +1389,55 @@ function mapFileRow(row, stems = []) {
   };
 }
 
+function nameAppearsIn(text, name) {
+  if (!text || !name) return false;
+  const trimmed = String(name).trim();
+  if (trimmed.length < 2) return false;
+  const escaped = trimmed
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\s+/g, '[\\s._\\-]+');
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}([^\\p{L}\\p{N}]|$)`, 'iu').test(String(text));
+}
+
+function normalizeActorName(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ');
+}
+
+function listActorRows() {
+  if (!db) return [];
+  return db.prepare('SELECT id, name FROM actors ORDER BY name COLLATE NOCASE').all();
+}
+
+function actorsForFile(filename, displayName, actorRows) {
+  return actorRows
+    .filter(actor => nameAppearsIn(filename, actor.name) || nameAppearsIn(displayName, actor.name))
+    .map(actor => actor.name);
+}
+
+function attachActors(items) {
+  const actorRows = listActorRows();
+  if (!actorRows.length) {
+    return items.map(item => ({ ...item, actors: [] }));
+  }
+  return items.map(item => ({
+    ...item,
+    actors: actorsForFile(item.filename, item.displayName, actorRows)
+  }));
+}
+
+function getActorsWithCounts() {
+  const actors = listActorRows();
+  if (!actors.length) return [];
+  const files = db.prepare('SELECT filename, display_name FROM files').all();
+  return actors.map(actor => ({
+    id: actor.id,
+    name: actor.name,
+    count: files.reduce((total, file) => (
+      total + ((nameAppearsIn(file.filename, actor.name) || nameAppearsIn(file.display_name, actor.name)) ? 1 : 0)
+    ), 0)
+  }));
+}
+
 function attachStems(rows) {
   if (!rows.length) return [];
   const ids = rows.map(row => row.id);
@@ -1400,9 +1465,14 @@ function searchTermClause(term) {
   const stemmed = cleaned ? stemmer.stem(cleaned) : '';
   const stemValues = [...new Set([normalized, stemmed].filter(Boolean))];
   const stemPlaceholders = stemValues.map(() => '?').join(',');
+  const like = `%${normalized
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_')
+    .replace(/\s+/g, '%')}%`;
   return {
-    sql: `(INSTR(LOWER(f.filename), ?) > 0 OR INSTR(LOWER(f.display_name), ?) > 0 OR f.id IN (SELECT file_id FROM stems WHERE stem IN (${stemPlaceholders})))`,
-    params: [normalized, normalized, ...stemValues]
+    sql: `(LOWER(f.filename) LIKE ? ESCAPE '\\' OR LOWER(f.display_name) LIKE ? ESCAPE '\\' OR f.id IN (SELECT file_id FROM stems WHERE stem IN (${stemPlaceholders})))`,
+    params: [like, like, ...stemValues]
   };
 }
 
@@ -1487,7 +1557,7 @@ app.get('/api/videos', (req, res) => {
     `).all(...filters.params, limit, offset);
 
     res.json({
-      videos: attachFavoriteFlags(attachStems(rows), user && user.id),
+      videos: attachActors(attachFavoriteFlags(attachStems(rows), user && user.id)),
       pagination: {
         currentPage: page,
         totalPages,
@@ -1607,7 +1677,7 @@ app.get('/api/resolutions', (req, res) => {
 
 // API endpoint to detect and save video resolution
 app.get('/api/detect-resolution/:filename(*)', (req, res) => {
-  const filename = decodeURIComponent(req.params.filename);
+  const filename = decodeFilenameParam(req.params.filename);
   const filePath = path.join(BASE_PATH, filename);
   const fileType = getFileType(filename);
 
@@ -1753,65 +1823,72 @@ function sendPlaceholderSvg(res, svg, cacheable) {
 
 // Serve thumbnail images
 app.get('/api/thumbnail/:filename(*)', async (req, res) => {
-  const filename = decodeURIComponent(req.params.filename);
-  const filePath = path.join(BASE_PATH, filename);
-  const fileType = getFileType(filename);
-  const thumbnailPath = getThumbnailPath(filename);
+  try {
+    const filename = decodeFilenameParam(req.params.filename);
+    const filePath = path.join(BASE_PATH, filename);
+    const fileType = getFileType(filename);
+    const thumbnailPath = getThumbnailPath(filename);
 
-  const resolvedPath = path.resolve(filePath);
-  const resolvedBase = path.resolve(BASE_PATH);
+    const resolvedPath = path.resolve(filePath);
+    const resolvedBase = path.resolve(BASE_PATH);
 
-  if (!resolvedPath.startsWith(resolvedBase)) {
-    return res.status(403).json({ error: 'Access denied' });
-  }
+    if (!resolvedPath.startsWith(resolvedBase)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'File not found' });
-  }
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
 
-  const absoluteThumbnailPath = path.resolve(thumbnailPath);
-  const longCache = 'public, max-age=604800, immutable';
+    const absoluteThumbnailPath = path.resolve(thumbnailPath);
+    const longCache = 'public, max-age=604800, immutable';
 
-  if (fs.existsSync(absoluteThumbnailPath)) {
-    return sendCachedFile(res, absoluteThumbnailPath, longCache);
-  }
+    if (fs.existsSync(absoluteThumbnailPath)) {
+      return sendCachedFile(res, absoluteThumbnailPath, longCache);
+    }
 
-  if (fileType === 'image' && sharp) {
-    try {
-      const generated = await ensureImageThumbnail(filename, resolvedPath, absoluteThumbnailPath);
-      return sendCachedFile(res, generated, longCache);
-    } catch (error) {
-      console.error(`Error generating image thumbnail for ${filename}:`, error.message);
+    if (fileType === 'image' && sharp) {
+      try {
+        const generated = await ensureImageThumbnail(filename, resolvedPath, absoluteThumbnailPath);
+        return sendCachedFile(res, generated, longCache);
+      } catch (error) {
+        console.error(`Error generating image thumbnail for ${filename}:`, error.message);
+        return sendCachedFile(res, resolvedPath, 'public, max-age=3600');
+      }
+    }
+
+    if (fileType === 'image') {
       return sendCachedFile(res, resolvedPath, 'public, max-age=3600');
     }
-  }
 
-  if (fileType === 'image') {
-    return sendCachedFile(res, resolvedPath, 'public, max-age=3600');
-  }
-
-  if (fileType === 'pdf') {
-    const pdfIconSvg = `<?xml version="1.0" encoding="UTF-8"?>
+    if (fileType === 'pdf') {
+      const pdfIconSvg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="320" height="180" xmlns="http://www.w3.org/2000/svg">
   <rect width="320" height="180" fill="#14161c"/>
   <rect x="100" y="40" width="120" height="100" fill="#e07a5f" rx="8"/>
   <text x="160" y="110" font-family="system-ui, sans-serif" font-size="36" font-weight="700" fill="white" text-anchor="middle">PDF</text>
 </svg>`;
-    return sendPlaceholderSvg(res, pdfIconSvg, true);
-  }
+      return sendPlaceholderSvg(res, pdfIconSvg, true);
+    }
 
-  if (fileType === 'video') {
-    const videoIconSvg = `<?xml version="1.0" encoding="UTF-8"?>
+    if (fileType === 'video') {
+      const videoIconSvg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="320" height="180" xmlns="http://www.w3.org/2000/svg">
   <rect width="320" height="180" fill="#14161c"/>
   <circle cx="160" cy="90" r="36" fill="#f0b429"/>
   <polygon points="150,72 150,108 182,90" fill="#14161c"/>
 </svg>`;
-    return sendPlaceholderSvg(res, videoIconSvg, false);
-  }
+      return sendPlaceholderSvg(res, videoIconSvg, false);
+    }
 
-  if (!res.headersSent) {
-    res.status(404).json({ error: 'Thumbnail not available for this file type' });
+    if (!res.headersSent) {
+      res.status(404).json({ error: 'Thumbnail not available for this file type' });
+    }
+  } catch (error) {
+    console.error('Error serving thumbnail:', error);
+    if (!res.headersSent) {
+      res.status(400).json({ error: 'Invalid filename' });
+    }
   }
 });
 
@@ -1910,7 +1987,7 @@ app.delete('/api/file/:filename(*)', (req, res) => {
       return res.status(500).json({ error: 'Database not initialized' });
     }
 
-    const filename = decodeURIComponent(req.params.filename);
+    const filename = decodeFilenameParam(req.params.filename);
     const filePath = resolveLibraryPath(filename);
     if (!filePath) {
       return res.status(403).json({ error: 'Access denied' });
@@ -1976,12 +2053,109 @@ app.get('/api/favorites', (req, res) => {
   });
 });
 
+app.get('/api/actors', (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ actors: [] });
+    }
+    res.json({ actors: getActorsWithCounts() });
+  } catch (error) {
+    console.error('Error listing actors:', error);
+    res.status(500).json({ error: 'Error listing actors' });
+  }
+});
+
+app.post('/api/actors', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    const name = normalizeActorName(req.body && req.body.name);
+    if (name.length < 2) {
+      return res.status(400).json({ error: 'Actor name must be at least 2 characters' });
+    }
+    if (name.length > 80) {
+      return res.status(400).json({ error: 'Actor name is too long' });
+    }
+    try {
+      const result = db.prepare('INSERT INTO actors (name) VALUES (?)').run(name);
+      const actor = db.prepare('SELECT id, name FROM actors WHERE id = ?').get(result.lastInsertRowid);
+      res.json({ actor, actors: getActorsWithCounts() });
+    } catch (error) {
+      if (String(error.message).includes('UNIQUE')) {
+        return res.status(409).json({ error: 'That actor is already in the list' });
+      }
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error adding actor:', error);
+    res.status(500).json({ error: 'Error adding actor' });
+  }
+});
+
+app.put('/api/actors/:id', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Invalid actor id' });
+    }
+    const existing = db.prepare('SELECT id FROM actors WHERE id = ?').get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Actor not found' });
+    }
+    const name = normalizeActorName(req.body && req.body.name);
+    if (name.length < 2) {
+      return res.status(400).json({ error: 'Actor name must be at least 2 characters' });
+    }
+    if (name.length > 80) {
+      return res.status(400).json({ error: 'Actor name is too long' });
+    }
+    try {
+      db.prepare('UPDATE actors SET name = ? WHERE id = ?').run(name, id);
+    } catch (error) {
+      if (String(error.message).includes('UNIQUE')) {
+        return res.status(409).json({ error: 'That actor is already in the list' });
+      }
+      throw error;
+    }
+    const actor = db.prepare('SELECT id, name FROM actors WHERE id = ?').get(id);
+    res.json({ actor, actors: getActorsWithCounts() });
+  } catch (error) {
+    console.error('Error updating actor:', error);
+    res.status(500).json({ error: 'Error updating actor' });
+  }
+});
+
+app.delete('/api/actors/:id', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Invalid actor id' });
+    }
+    const existing = db.prepare('SELECT id FROM actors WHERE id = ?').get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Actor not found' });
+    }
+    db.prepare('DELETE FROM actors WHERE id = ?').run(id);
+    res.json({ ok: true, actors: getActorsWithCounts() });
+  } catch (error) {
+    console.error('Error deleting actor:', error);
+    res.status(500).json({ error: 'Error deleting actor' });
+  }
+});
+
 // Face recognition API endpoints
 if (faceService) {
   // Detect faces in an image
   app.post('/api/detect-faces/:filename(*)', async (req, res) => {
     try {
-      const filename = decodeURIComponent(req.params.filename);
+      const filename = decodeFilenameParam(req.params.filename);
       const result = await faceService.processImage(filename);
       res.json(result);
     } catch (error) {
@@ -2047,7 +2221,7 @@ app.get('/api/video-info/:filename(*)', (req, res) => {
       return res.status(500).json({ error: 'Database not initialized' });
     }
 
-    const filename = decodeURIComponent(req.params.filename);
+    const filename = decodeFilenameParam(req.params.filename);
     const current = db.prepare(`
       SELECT id, filename, file_type, display_name, date, date_source, resolution
       FROM files WHERE filename = ?
@@ -2058,7 +2232,7 @@ app.get('/api/video-info/:filename(*)', (req, res) => {
     }
 
     const user = getSessionUser(req);
-    const [currentVideo] = attachFavoriteFlags(attachStems([current]), user && user.id);
+    const [currentVideo] = attachActors(attachFavoriteFlags(attachStems([current]), user && user.id));
 
     const relatedRows = db.prepare(`
       SELECT f.id, f.filename, f.file_type, f.display_name, f.date, f.date_source, f.resolution,
@@ -2072,7 +2246,7 @@ app.get('/api/video-info/:filename(*)', (req, res) => {
       LIMIT 20
     `).all(current.id, current.file_type, current.id);
 
-    const relatedVideos = attachFavoriteFlags(attachStems(relatedRows), user && user.id).map((video, i) => ({
+    const relatedVideos = attachActors(attachFavoriteFlags(attachStems(relatedRows), user && user.id)).map((video, i) => ({
       ...video,
       similarityScore: relatedRows[i].similarityScore,
       sharedStems: []
@@ -2134,6 +2308,10 @@ app.get('/pdf/:filename(*)', (req, res) => {
 // Serve the main page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
 });
 
 // Start the server

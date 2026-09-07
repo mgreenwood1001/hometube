@@ -66,6 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadResolutions();
     loadDateRange();
     loadDateCounts();
+    loadActors();
     
     // Set initial videos per page from select
     const videosPerPageSelect = document.getElementById('videosPerPageSelect');
@@ -558,6 +559,9 @@ function displayVideos(videos) {
             <div class="video-info">
                 <div class="video-title">${escapeHtml(video.displayName)}</div>
                 ${video.date ? `<div class="video-date">${formatVideoDate(video.date)}</div>` : ''}
+                ${(video.actors || []).length ? `<div class="video-actors">${video.actors.map(actor =>
+                    `<button type="button" class="video-actor" data-actor="${escapeHtml(actor)}" onclick="event.stopPropagation(); searchByActor(this.dataset.actor)">${escapeHtml(actor)}</button>`
+                ).join('')}</div>` : ''}
                 <div class="video-stems">
                     ${stems.map(stem => `<span class="video-stem">${escapeHtml(stem)}</span>`).join('')}
                 </div>
@@ -663,7 +667,7 @@ function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fil
         const stemsDisplay = stems.length > 1 
             ? stems.map(s => `<strong>${escapeHtml(s)}</strong>`).join(` ${modeDisplay} `)
             : `<strong>${escapeHtml(stems[0])}</strong>`;
-        filters.push(`Stems: ${stemsDisplay} (${modeDisplay} mode)`);
+        filters.push(`Search: ${stemsDisplay}`);
         
         // Update active stems in sidebar
         document.querySelectorAll('.stem-tag').forEach(tag => {
@@ -673,8 +677,14 @@ function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fil
                 tag.classList.remove('active');
             }
         });
+        document.querySelectorAll('.actor-tag').forEach(tag => {
+            tag.classList.toggle('active', stems.some(value => value.toLowerCase() === String(tag.dataset.actor || '').toLowerCase()));
+        });
     } else {
         document.querySelectorAll('.stem-tag').forEach(tag => {
+            tag.classList.remove('active');
+        });
+        document.querySelectorAll('.actor-tag').forEach(tag => {
             tag.classList.remove('active');
         });
     }
@@ -702,13 +712,129 @@ function updateFilterInfo(stem, totalVideos, mode = 'OR', resolution = null, fil
 // Filter videos by multiple stems with mode
 function filterByStems(stem, mode = 'OR') {
     currentPage = 1;
-    loadVideos(1, stem, mode, currentResolution, currentFileType);
-    // Don't auto-update search input - let user type freely
+    loadVideos(1, stem, mode, currentResolution, currentFileType, currentDateFrom, currentDateTo);
 }
 
-// Filter videos by single stem (for backward compatibility with stem tag clicks)
 function filterByStem(stem) {
     filterByStems(stem, 'OR');
+}
+
+function searchByActor(name) {
+    if (!name) return;
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) searchInput.value = name;
+    if (typeof hideSearchSuggestions === 'function') hideSearchSuggestions();
+    currentFavorites = false;
+    filterByStems(name, 'AND');
+}
+
+let allActors = [];
+
+async function loadActors() {
+    const actorsList = document.getElementById('actorsList');
+    if (!actorsList) return;
+    try {
+        const response = await fetch('/api/actors', { credentials: 'include' });
+        const data = await response.json();
+        allActors = data.actors || [];
+        displayActors(allActors);
+    } catch (error) {
+        console.error('Error loading actors:', error);
+        actorsList.innerHTML = '<p class="error">Error loading actors</p>';
+    }
+}
+
+function displayActors(actors) {
+    const actorsList = document.getElementById('actorsList');
+    if (!actorsList) return;
+    if (!actors.length) {
+        actorsList.innerHTML = '<p class="loading">Add names that appear in file names, then click one to search.</p>';
+        return;
+    }
+    actorsList.innerHTML = actors.map(actor => `
+        <div class="actor-row">
+            <button type="button" class="stem-tag actor-tag" data-actor="${escapeHtml(actor.name)}" onclick="searchByActor(this.dataset.actor)">
+                ${escapeHtml(actor.name)} <span class="stem-count">${actor.count}</span>
+            </button>
+            <button type="button" class="actor-edit" title="Rename" aria-label="Rename ${escapeHtml(actor.name)}" onclick="renameActor(${actor.id}, this.previousElementSibling.dataset.actor)">✎</button>
+            <button type="button" class="actor-remove" title="Remove from list" aria-label="Remove ${escapeHtml(actor.name)}" onclick="removeActor(${actor.id})">×</button>
+        </div>
+    `).join('');
+}
+
+async function addActor(event) {
+    event.preventDefault();
+    const input = document.getElementById('actorNameInput');
+    const name = (input && input.value || '').trim();
+    if (!name) return;
+    try {
+        const response = await fetch('/api/actors', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ name })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not add actor');
+        }
+        if (input) input.value = '';
+        allActors = data.actors || [];
+        displayActors(allActors);
+        reloadVideosPreservingFilters();
+    } catch (error) {
+        console.error('Add actor failed:', error);
+        window.alert(error.message);
+    }
+}
+
+async function renameActor(id, currentName) {
+    const next = window.prompt('Actor name', currentName || '');
+    if (next == null) return;
+    const name = next.trim();
+    if (!name || name === currentName) return;
+    try {
+        const response = await fetch(`/api/actors/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ name })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not rename actor');
+        }
+        allActors = data.actors || [];
+        displayActors(allActors);
+        reloadVideosPreservingFilters();
+    } catch (error) {
+        console.error('Rename actor failed:', error);
+        window.alert(error.message);
+    }
+}
+
+async function removeActor(id) {
+    if (!window.confirm('Remove this actor from the list?')) return;
+    try {
+        const response = await fetch(`/api/actors/${id}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not remove actor');
+        }
+        allActors = data.actors || [];
+        displayActors(allActors);
+        reloadVideosPreservingFilters();
+    } catch (error) {
+        console.error('Remove actor failed:', error);
+        window.alert(error.message);
+    }
+}
+
+function reloadVideosPreservingFilters() {
+    loadVideos(currentPage, currentStem, currentFilterMode, currentResolution, currentFileType, currentDateFrom, currentDateTo);
 }
 
 function showFavorites() {
