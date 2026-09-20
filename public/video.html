@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title id="pageTitle">Movie Tube - Player</title>
     <link rel="stylesheet" href="/style.css">
-    <link rel="stylesheet" href="/video.css">
+    <link rel="stylesheet" href="/video.css?v=markers3">
     <link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
 </head>
 <body>
@@ -38,6 +38,11 @@
                         data-setup="{}">
                     </video>
                     <button type="button" class="player-favorite-btn favorite-btn" id="playerFavoriteButton" onclick="toggleFavorite(this)" title="Add to favorites" hidden></button>
+                    <div id="videoRepairOverlay" class="video-repair-overlay" hidden>
+                        <p id="videoRepairMessage">This video failed to load. It may have a broken container or missing keyframes.</p>
+                        <button type="button" class="action-button" id="repairVideoButton" onclick="repairCurrentVideo()">Repair file</button>
+                        <p class="video-repair-status" id="videoRepairStatus" hidden></p>
+                    </div>
                 </div>
                 <div class="video-info-section">
                     <h1 id="videoTitle" class="video-title-large">Loading...</h1>
@@ -51,8 +56,18 @@
                                 <span class="favorite-label">Favorite</span>
                             </button>
                             <button class="action-button" type="button" onclick="copyPageLink(this)" title="Copy link">Copy link</button>
+                            <button class="action-button" type="button" id="addMarkerButton" onclick="addMarkerAtCurrentTime()">Mark this moment</button>
+                            <button class="action-button" type="button" id="repairVideoActionButton" onclick="repairCurrentVideo()">Repair file</button>
                         </div>
                     </div>
+                    <section class="video-markers-section" id="videoMarkersSection" hidden>
+                        <div class="marker-compose">
+                            <label class="marker-compose-label" for="markerNoteInput">Note at this moment</label>
+                            <input id="markerNoteInput" type="text" maxlength="280" placeholder="Text shown when you hover the marker">
+                        </div>
+                        <ul class="video-markers-list" id="videoMarkersList"></ul>
+                        <p class="marker-status" id="markerStatus" hidden></p>
+                    </section>
                     <div class="video-description-section">
                         <div id="videoStems" class="video-stems-large"></div>
                     </div>
@@ -67,7 +82,10 @@
             <section class="content-danger-zone" aria-labelledby="removeContentHeading">
                 <h2 id="removeContentHeading">Remove from library</h2>
                 <p>This permanently deletes the file from disk and removes it from Movie Tube. Scroll was required so this stays out of the way while watching.</p>
-                <button type="button" class="action-button danger-button" id="removeContentButton" onclick="removeCurrentMedia(this)">Remove this video</button>
+                <div class="danger-zone-actions">
+                    <button type="button" class="action-button danger-button" id="removeContentButton" onclick="removeCurrentMedia(this)">Remove this video</button>
+                    <button type="button" class="action-button" id="cancelRemoveContentButton" hidden onclick="cancelRemoveCurrentMedia()">Cancel</button>
+                </div>
                 <p class="remove-status" id="removeContentStatus" hidden></p>
             </section>
         </div>
@@ -81,6 +99,6 @@
         }).catch(() => {});
     </script>
     <script src="/favorites.js"></script>
-    <script src="/video.js"></script>
+    <script src="/video.js?v=markers3"></script>
 </body>
 </html>

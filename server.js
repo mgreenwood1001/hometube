@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const natural = require('natural');
 const ffmpeg = require('fluent-ffmpeg');
+const { spawn } = require('child_process');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const Database = require('better-sqlite3');
@@ -123,6 +124,19 @@ function initializeDatabase() {
       name TEXT NOT NULL COLLATE NOCASE UNIQUE,
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
+
+    CREATE TABLE IF NOT EXISTS video_markers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_id INTEGER NOT NULL,
+      time_seconds REAL NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      user_id INTEGER,
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_markers_file ON video_markers(file_id, time_seconds);
   `);
 
   console.log('Database initialized successfully');
@@ -322,9 +336,15 @@ app.use(requireAuth);
 
 // Serve static files from public directory (after auth check)
 app.use(express.static('public', {
-  maxAge: '1d',
   etag: true,
-  lastModified: true
+  lastModified: true,
+  setHeaders(res, filePath) {
+    if (/\.(?:js|css|html)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache');
+      return;
+    }
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+  }
 }));
 
 // Stemmer instance
@@ -370,6 +390,61 @@ function removeFilenameFromFilelist(filename) {
   if (next !== content) {
     fs.writeFileSync(FILELIST_PATH, next);
   }
+}
+
+const inFlightRepairs = new Set();
+
+function remuxVideoCopy(filePath) {
+  const dir = path.dirname(filePath);
+  const ext = path.extname(filePath) || '.mp4';
+  const tempPath = path.join(dir, `.movietube-fix-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`);
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      try {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      } catch (error) {
+        console.warn('Could not remove remux tempfile:', error.message);
+      }
+    };
+
+    const child = spawn('ffmpeg', ['-y', '-i', filePath, '-c', 'copy', tempPath], {
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
+    });
+    child.on('error', (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        cleanup();
+        const hint = stderr.split('\n').map(line => line.trim()).filter(Boolean).slice(-3).join(' ');
+        return reject(new Error(hint || 'ffmpeg remux failed'));
+      }
+      try {
+        const stats = fs.statSync(tempPath);
+        if (!stats.isFile() || stats.size < 1) {
+          cleanup();
+          return reject(new Error('Remux produced an empty file'));
+        }
+        try {
+          fs.renameSync(tempPath, filePath);
+        } catch (error) {
+          fs.copyFileSync(tempPath, filePath);
+          fs.unlinkSync(tempPath);
+        }
+        resolve({ size: fs.statSync(filePath).size, mtime: fs.statSync(filePath).mtimeMs });
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    });
+  });
 }
 
 // PDF thumbnail generation is disabled to avoid crashes
@@ -1086,14 +1161,22 @@ function getFileDateSync(filename) {
 }
 
 // Scan media path and populate database
+let scanInProgress = false;
+
 function scanAndPopulateDatabase() {
   console.log('\n=== Scanning media path and populating database ===');
+  const empty = { found: 0, added: 0, skipped: 0, removed: 0 };
+
+  if (scanInProgress) {
+    return { ...empty, busy: true };
+  }
+  scanInProgress = true;
 
   try {
     if (!BASE_PATH || !fs.existsSync(BASE_PATH)) {
       console.log(`Media path does not exist: ${BASE_PATH}`);
       console.log('Skipping file scanning');
-      return;
+      return { ...empty, error: 'Media path does not exist' };
     }
 
     console.log(`Scanning media path: ${BASE_PATH}`);
@@ -1113,7 +1196,7 @@ function scanAndPopulateDatabase() {
 
         for (const entry of entries) {
           // Skip macOS system files
-          if (entry.name.startsWith('._') || entry.name === '.DS_Store') {
+          if (entry.name.startsWith('._') || entry.name === '.DS_Store' || entry.name.startsWith('.movietube-fix-')) {
             continue;
           }
 
@@ -1228,8 +1311,12 @@ function scanAndPopulateDatabase() {
     console.log(`  Files added: ${added}`);
     console.log(`  Files skipped (already in DB): ${skipped}`);
     console.log(`  Files removed (no longer exist): ${removed}\n`);
+    return { found: filesFound.length, added, skipped, removed };
   } catch (error) {
     console.error('Error scanning and populating database:', error);
+    return { found: 0, added: 0, skipped: 0, removed: 0, error: error.message };
+  } finally {
+    scanInProgress = false;
   }
 }
 
@@ -1387,6 +1474,27 @@ function mapFileRow(row, stems = []) {
     date: row.date,
     dateSource: row.date_source || 'file'
   };
+}
+
+function normalizeMarkerNote(note) {
+  return String(note || '').trim().slice(0, 280);
+}
+
+function listMarkersForFile(fileId) {
+  if (!db || !fileId) return [];
+  return db.prepare(`
+    SELECT m.id, m.time_seconds AS time, m.note, m.created_at AS createdAt, u.username
+    FROM video_markers m
+    LEFT JOIN users u ON u.id = m.user_id
+    WHERE m.file_id = ?
+    ORDER BY m.time_seconds ASC, m.id ASC
+  `).all(fileId).map(row => ({
+    id: row.id,
+    time: row.time,
+    note: row.note || '',
+    createdAt: row.createdAt ? row.createdAt * 1000 : null,
+    username: row.username || null
+  }));
 }
 
 function nameAppearsIn(text, name) {
@@ -2053,6 +2161,190 @@ app.get('/api/favorites', (req, res) => {
   });
 });
 
+app.post('/api/library/scan', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    if (scanInProgress) {
+      return res.status(409).json({ error: 'A scan is already running' });
+    }
+    const result = scanAndPopulateDatabase();
+    if (result && result.busy) {
+      return res.status(409).json({ error: 'A scan is already running' });
+    }
+    if (result && result.error && result.found === 0 && result.added === 0) {
+      return res.status(500).json({ error: result.error });
+    }
+    generateMissingThumbnails().catch((error) => {
+      console.error('Thumbnail generation after scan failed:', error);
+    });
+    res.json({
+      ok: true,
+      found: result.found,
+      added: result.added,
+      skipped: result.skipped,
+      removed: result.removed
+    });
+  } catch (error) {
+    console.error('Error scanning library:', error);
+    res.status(500).json({ error: 'Error scanning library' });
+  }
+});
+
+app.post('/api/video/repair', async (req, res) => {
+  const filename = req.body && req.body.filename;
+  if (!filename) {
+    return res.status(400).json({ error: 'filename is required' });
+  }
+  if (inFlightRepairs.has(filename)) {
+    return res.status(409).json({ error: 'A repair is already running for this file' });
+  }
+
+  const filePath = resolveLibraryPath(filename);
+  if (!filePath) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  if (getFileType(filename) !== 'video') {
+    return res.status(400).json({ error: 'Only video files can be repaired this way' });
+  }
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  inFlightRepairs.add(filename);
+  try {
+    const result = await remuxVideoCopy(filePath);
+    if (db) {
+      try {
+        db.prepare('UPDATE files SET file_size = ?, mtime = ?, updated_at = strftime(\'%s\', \'now\') WHERE filename = ?')
+          .run(result.size, result.mtime, filename);
+      } catch (error) {
+        console.warn('Could not update file record after repair:', error.message);
+      }
+    }
+    res.json({ ok: true, filename, size: result.size });
+  } catch (error) {
+    console.error('Error repairing video:', error);
+    res.status(500).json({ error: error.message || 'Could not repair video' });
+  } finally {
+    inFlightRepairs.delete(filename);
+  }
+});
+
+app.get('/api/markers/:filename(*)', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    const filename = decodeFilenameParam(req.params.filename);
+    const file = db.prepare('SELECT id FROM files WHERE filename = ?').get(filename);
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    res.json({ markers: listMarkersForFile(file.id) });
+  } catch (error) {
+    console.error('Error listing markers:', error);
+    res.status(500).json({ error: 'Error listing markers' });
+  }
+});
+
+app.post('/api/markers', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    const filename = req.body && req.body.filename;
+    const time = Number(req.body && req.body.time);
+    const note = normalizeMarkerNote(req.body && req.body.note);
+    if (!filename) {
+      return res.status(400).json({ error: 'filename is required' });
+    }
+    if (!Number.isFinite(time) || time < 0) {
+      return res.status(400).json({ error: 'time must be a number of seconds' });
+    }
+    const file = db.prepare('SELECT id, file_type FROM files WHERE filename = ?').get(filename);
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    if (file.file_type !== 'video') {
+      return res.status(400).json({ error: 'Markers can only be added to videos' });
+    }
+    const user = getSessionUser(req);
+    const result = db.prepare(`
+      INSERT INTO video_markers (file_id, time_seconds, note, user_id)
+      VALUES (?, ?, ?, ?)
+    `).run(file.id, time, note, user && user.id || null);
+    res.json({
+      marker: {
+        id: result.lastInsertRowid,
+        time,
+        note,
+        username: user && user.username || null
+      },
+      markers: listMarkersForFile(file.id)
+    });
+  } catch (error) {
+    console.error('Error adding marker:', error);
+    res.status(500).json({ error: 'Error adding marker' });
+  }
+});
+
+app.put('/api/marker/:id', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Invalid marker id' });
+    }
+    const existing = db.prepare('SELECT id, file_id FROM video_markers WHERE id = ?').get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Marker not found' });
+    }
+    const note = req.body && Object.prototype.hasOwnProperty.call(req.body, 'note')
+      ? normalizeMarkerNote(req.body.note)
+      : null;
+    const time = req.body && req.body.time != null ? Number(req.body.time) : null;
+    if (time != null && (!Number.isFinite(time) || time < 0)) {
+      return res.status(400).json({ error: 'time must be a number of seconds' });
+    }
+    if (note != null && time != null) {
+      db.prepare('UPDATE video_markers SET note = ?, time_seconds = ? WHERE id = ?').run(note, time, id);
+    } else if (note != null) {
+      db.prepare('UPDATE video_markers SET note = ? WHERE id = ?').run(note, id);
+    } else if (time != null) {
+      db.prepare('UPDATE video_markers SET time_seconds = ? WHERE id = ?').run(time, id);
+    }
+    res.json({ markers: listMarkersForFile(existing.file_id) });
+  } catch (error) {
+    console.error('Error updating marker:', error);
+    res.status(500).json({ error: 'Error updating marker' });
+  }
+});
+
+app.delete('/api/marker/:id', (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Invalid marker id' });
+    }
+    const existing = db.prepare('SELECT id, file_id FROM video_markers WHERE id = ?').get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Marker not found' });
+    }
+    db.prepare('DELETE FROM video_markers WHERE id = ?').run(id);
+    res.json({ ok: true, markers: listMarkersForFile(existing.file_id) });
+  } catch (error) {
+    console.error('Error deleting marker:', error);
+    res.status(500).json({ error: 'Error deleting marker' });
+  }
+});
+
 app.get('/api/actors', (req, res) => {
   try {
     if (!db) {
@@ -2233,6 +2525,7 @@ app.get('/api/video-info/:filename(*)', (req, res) => {
 
     const user = getSessionUser(req);
     const [currentVideo] = attachActors(attachFavoriteFlags(attachStems([current]), user && user.id));
+    currentVideo.markers = listMarkersForFile(current.id);
 
     const relatedRows = db.prepare(`
       SELECT f.id, f.filename, f.file_type, f.display_name, f.date, f.date_source, f.resolution,
@@ -2274,6 +2567,7 @@ app.get('/video/:filename(*)', (req, res) => {
     return res.status(404).json({ error: 'File not found' });
   }
   
+  res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(__dirname, 'public', 'video.html'));
 });
 

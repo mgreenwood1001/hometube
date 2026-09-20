@@ -1,3 +1,55 @@
+let pendingRemoveFilename = null;
+
+function setUiStatus(id, message, isError) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const text = message || '';
+    el.hidden = !text;
+    el.textContent = text;
+    el.classList.toggle('is-error', Boolean(isError && text));
+}
+
+function copyTextWithTextarea(text) {
+    return new Promise((resolve, reject) => {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.setAttribute('readonly', '');
+        area.style.cssText = 'position:fixed;top:0;left:-9999px';
+        document.body.appendChild(area);
+        area.focus();
+        area.select();
+        try {
+            const ok = document.execCommand('copy');
+            area.remove();
+            ok ? resolve() : reject(new Error('Copy failed'));
+        } catch (error) {
+            area.remove();
+            reject(error);
+        }
+    });
+}
+
+function copyTextToClipboard(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        return navigator.clipboard.writeText(text).catch(() => copyTextWithTextarea(text));
+    }
+    return copyTextWithTextarea(text);
+}
+
+function copyPageLink(button) {
+    const url = window.location.href;
+    const original = button ? button.textContent : '';
+    copyTextToClipboard(url).then(() => {
+        if (!button) return;
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = original; }, 1400);
+    }).catch(() => {
+        if (!button) return;
+        button.textContent = 'Copy failed';
+        setTimeout(() => { button.textContent = original; }, 1600);
+    });
+}
+
 function favoriteIconSvg() {
     return `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12.1 21.35 10.6 20C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.6 11.54l-1.3 1.31z"/></svg>`;
 }
@@ -71,11 +123,30 @@ function bindFavoriteButton(buttonId, filename, favorited) {
         button.hidden = false;
         button.disabled = false;
     });
+    pendingRemoveFilename = null;
+    const cancel = document.getElementById('cancelRemoveContentButton');
+    if (cancel) cancel.hidden = true;
     const removeButton = document.getElementById('removeContentButton');
     if (removeButton) {
+        if (removeButton.dataset.defaultLabel) {
+            removeButton.textContent = removeButton.dataset.defaultLabel;
+        }
         removeButton.setAttribute('data-filename', filename);
         removeButton.disabled = false;
     }
+    setUiStatus('removeContentStatus', '');
+}
+
+function cancelRemoveCurrentMedia() {
+    pendingRemoveFilename = null;
+    const button = document.getElementById('removeContentButton');
+    if (button && button.dataset.defaultLabel) {
+        button.textContent = button.dataset.defaultLabel;
+        button.disabled = false;
+    }
+    const cancel = document.getElementById('cancelRemoveContentButton');
+    if (cancel) cancel.hidden = true;
+    setUiStatus('removeContentStatus', '');
 }
 
 async function removeCurrentMedia(button) {
@@ -83,14 +154,21 @@ async function removeCurrentMedia(button) {
         || document.getElementById('favoriteButton')?.getAttribute('data-filename');
     if (!filename) return;
     const title = document.querySelector('.video-title-large')?.textContent || filename;
-    const confirmed = window.confirm(`Permanently delete "${title}" from disk and remove it from the library? This cannot be undone.`);
-    if (!confirmed) return;
-    if (button) button.disabled = true;
-    const status = document.getElementById('removeContentStatus');
-    if (status) {
-        status.hidden = true;
-        status.textContent = '';
+    if (button && !button.dataset.defaultLabel) {
+        button.dataset.defaultLabel = button.textContent.trim();
     }
+    const cancel = document.getElementById('cancelRemoveContentButton');
+    if (pendingRemoveFilename !== filename) {
+        pendingRemoveFilename = filename;
+        if (button) button.textContent = 'Confirm delete';
+        if (cancel) cancel.hidden = false;
+        setUiStatus('removeContentStatus', `Click Confirm delete to permanently remove "${title}". This cannot be undone.`);
+        return;
+    }
+    pendingRemoveFilename = null;
+    if (cancel) cancel.hidden = true;
+    if (button) button.disabled = true;
+    setUiStatus('removeContentStatus', 'Removing…');
     try {
         const response = await fetch(`/api/file/${encodeURIComponent(filename)}`, {
             method: 'DELETE',
@@ -103,11 +181,11 @@ async function removeCurrentMedia(button) {
         window.location.href = '/';
     } catch (error) {
         console.error('Remove failed:', error);
-        if (button) button.disabled = false;
-        if (status) {
-            status.hidden = false;
-            status.textContent = error.message;
+        if (button) {
+            button.disabled = false;
+            if (button.dataset.defaultLabel) button.textContent = button.dataset.defaultLabel;
         }
+        setUiStatus('removeContentStatus', error.message, true);
     }
 }
 

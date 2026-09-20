@@ -330,21 +330,6 @@ console.warn = function(...args) {
     originalWarn.apply(console, args);
 };
 
-function copyPageLink(button) {
-    const url = window.location.href;
-    const done = () => {
-        if (!button) return;
-        const original = button.textContent;
-        button.textContent = 'Copied';
-        setTimeout(() => { button.textContent = original; }, 1400);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(url).then(done).catch(() => window.prompt('Copy this link', url));
-    } else {
-        window.prompt('Copy this link', url);
-    }
-}
-
 // Initialize page
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', loadPdfPage);

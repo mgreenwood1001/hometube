@@ -1,5 +1,10 @@
 // Video.js player instance
 let videoPlayer = null;
+let currentVideoFilename = null;
+let videoMarkers = [];
+let markerTimeHandlerBound = false;
+let pendingMarkerDeleteId = null;
+let renamingMarkerId = null;
 
 // Get video filename from URL
 function getVideoFilenameFromURL() {
@@ -45,8 +50,12 @@ function initVideoPlayer() {
             if (error) {
                 console.error('Video.js player error:', error);
             }
+            if (error && error.code === 1) return;
+            showVideoRepairUi(error);
         });
         addVideoJsFavoriteButton(videoPlayer);
+        addVideoJsMarkerButton(videoPlayer);
+        setupMarkerPlayerHooks(videoPlayer);
     }
     return videoPlayer;
 }
@@ -179,6 +188,8 @@ async function loadVideoPage() {
         }
 
         bindFavoriteButton('favoriteButton', video.filename, video.favorited);
+        currentVideoFilename = video.filename;
+        setupVideoMarkers(video);
         
         // Set file type label
         const viewsElement = document.getElementById('videoViews');
@@ -239,6 +250,7 @@ async function loadVideoPage() {
                 });
                 player.load();
                 addVideoJsFavoriteButton(player);
+                hideVideoRepairUi();
             } else {
                 console.error('Failed to initialize video player');
                 showError('Failed to initialize video player. Please refresh the page.');
@@ -263,7 +275,90 @@ async function loadVideoPage() {
         if (relatedVideosList) {
             relatedVideosList.innerHTML = '<p class="error" style="color: #ff4444; padding: 1rem;">Failed to load related videos</p>';
         }
+        showVideoRepairUi({ message: error.message });
     }
+}
+
+function showVideoRepairUi(error) {
+    const overlay = document.getElementById('videoRepairOverlay');
+    const message = document.getElementById('videoRepairMessage');
+    const mainContent = document.getElementById('videoMainContent');
+    if (mainContent) {
+        mainContent.style.display = 'grid';
+        mainContent.style.visibility = 'visible';
+    }
+    if (!overlay) return;
+    const detail = error && error.message ? error.message : 'The player could not decode this file.';
+    if (message) {
+        message.textContent = `This video failed to load (${detail}). Repair rewrites the container with ffmpeg without re-encoding, which often fixes missing keyframes.`;
+    }
+    overlay.hidden = false;
+}
+
+function hideVideoRepairUi() {
+    const overlay = document.getElementById('videoRepairOverlay');
+    const status = document.getElementById('videoRepairStatus');
+    if (overlay) overlay.hidden = true;
+    if (status) {
+        status.hidden = true;
+        status.textContent = '';
+    }
+}
+
+async function repairCurrentVideo() {
+    const filename = currentVideoFilename || getVideoFilenameFromURL();
+    if (!filename) return;
+    const overlay = document.getElementById('videoRepairOverlay');
+    const status = document.getElementById('videoRepairStatus');
+    const buttons = [document.getElementById('repairVideoButton'), document.getElementById('repairVideoActionButton')].filter(Boolean);
+    if (overlay) overlay.hidden = false;
+    if (status) {
+        status.hidden = false;
+        status.textContent = 'Rewriting the file with ffmpeg. This can take a minute for large videos…';
+    }
+    buttons.forEach(button => { button.disabled = true; });
+    try {
+        if (videoPlayer) {
+            try { videoPlayer.pause(); } catch (error) {}
+        }
+        const response = await fetch('/api/video/repair', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ filename })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not repair video');
+        }
+        if (status) status.textContent = 'Repair finished. Reloading…';
+        reloadRepairedVideo(filename);
+    } catch (error) {
+        console.error('Video repair failed:', error);
+        if (status) {
+            status.hidden = false;
+            status.textContent = error.message;
+        }
+    } finally {
+        buttons.forEach(button => { button.disabled = false; });
+    }
+}
+
+function reloadRepairedVideo(filename) {
+    const player = videoPlayer || initVideoPlayer();
+    if (!player) {
+        window.location.reload();
+        return;
+    }
+    const src = `/api/video/${encodeURIComponent(filename)}?t=${Date.now()}`;
+    try { player.error(null); } catch (error) {}
+    player.src({
+        type: getVideoType(filename),
+        src
+    });
+    player.load();
+    hideVideoRepairUi();
+    player.play().catch(() => {});
 }
 
 // Show error message
@@ -314,23 +409,6 @@ function navigateToVideo(filename) {
     window.open(`/video/${encodedFilename}`, '_blank');
 }
 
-function copyPageLink(button) {
-    const url = window.location.href;
-    const done = () => {
-        if (!button) return;
-        const original = button.textContent;
-        button.textContent = 'Copied';
-        setTimeout(() => { button.textContent = original; }, 1400);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(url).then(done).catch(() => {
-            window.prompt('Copy this link', url);
-        });
-    } else {
-        window.prompt('Copy this link', url);
-    }
-}
-
 // Search by stem
 function searchByStem(stem) {
     window.location.href = `/?search=${encodeURIComponent(stem)}`;
@@ -343,6 +421,335 @@ function handleSearchKeyPress(event) {
         if (query) {
             window.location.href = `/?search=${encodeURIComponent(query)}`;
         }
+    }
+}
+
+function addVideoJsMarkerButton(player) {
+    player.ready(() => {
+        const bar = player.el().querySelector('.vjs-control-bar');
+        if (!bar || bar.querySelector('.vjs-marker-button')) return;
+        const btn = document.createElement('button');
+        btn.className = 'vjs-marker-button vjs-control vjs-button';
+        btn.type = 'button';
+        btn.title = 'Mark this moment';
+        btn.textContent = '◉';
+        btn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            addMarkerAtCurrentTime();
+        });
+        const favorite = bar.querySelector('.vjs-favorite-button');
+        const fullscreen = bar.querySelector('.vjs-fullscreen-control');
+        if (favorite) {
+            bar.insertBefore(btn, favorite);
+        } else if (fullscreen) {
+            bar.insertBefore(btn, fullscreen);
+        } else {
+            bar.appendChild(btn);
+        }
+    });
+}
+
+function setupMarkerPlayerHooks(player) {
+    player.ready(() => {
+        ensureMarkerHoverTip(player);
+        renderMarkerTicks();
+        if (!markerTimeHandlerBound) {
+            player.on('loadedmetadata', renderMarkerTicks);
+            player.on('durationchange', renderMarkerTicks);
+            player.on('playerresize', renderMarkerTicks);
+            markerTimeHandlerBound = true;
+        }
+    });
+}
+
+function ensureMarkerHoverTip(player) {
+    let tip = document.getElementById('markerHoverTip');
+    if (!tip) {
+        tip = document.createElement('div');
+        tip.id = 'markerHoverTip';
+        tip.className = 'marker-hover-tip';
+        tip.hidden = true;
+    }
+    const host = player && player.el ? player.el() : document.body;
+    if (tip.parentElement !== host) host.appendChild(tip);
+    return tip;
+}
+
+function hideMarkerHoverTip() {
+    const tip = document.getElementById('markerHoverTip');
+    if (tip) {
+        tip.hidden = true;
+        tip.textContent = '';
+    }
+}
+
+function showMarkerHoverTip(tick, marker) {
+    const player = videoPlayer;
+    const tip = ensureMarkerHoverTip(player);
+    const label = marker.note ? marker.note : 'Start here';
+    tip.textContent = `${formatMarkerTime(marker.time)} — ${label}`;
+    tip.hidden = false;
+    const tickBox = tick.getBoundingClientRect();
+    const host = tip.parentElement;
+    const hostBox = host.getBoundingClientRect();
+    const left = tickBox.left - hostBox.left + tickBox.width / 2;
+    const top = tickBox.top - hostBox.top;
+    tip.style.left = `${left}px`;
+    tip.style.top = `${Math.max(8, top - 8)}px`;
+}
+
+function formatMarkerTime(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+function setupVideoMarkers(video) {
+    const section = document.getElementById('videoMarkersSection');
+    const addButton = document.getElementById('addMarkerButton');
+    if (!video || video.fileType !== 'video') {
+        if (section) section.hidden = true;
+        if (addButton) addButton.hidden = true;
+        videoMarkers = [];
+        return;
+    }
+    if (section) section.hidden = false;
+    if (addButton) addButton.hidden = false;
+    setVideoMarkers(video.markers || []);
+    const player = videoPlayer || initVideoPlayer();
+    if (player) setupMarkerPlayerHooks(player);
+}
+
+function setVideoMarkers(markers) {
+    videoMarkers = (markers || []).slice().sort((a, b) => a.time - b.time || a.id - b.id);
+    hideMarkerHoverTip();
+    renderMarkerList();
+    renderMarkerTicks();
+}
+
+function renderMarkerList() {
+    const list = document.getElementById('videoMarkersList');
+    if (!list) return;
+    if (!videoMarkers.length) {
+        list.innerHTML = '<li class="video-marker-empty">No markers yet. Play to a spot, add a note, then mark this moment.</li>';
+        return;
+    }
+    list.innerHTML = videoMarkers.map(marker => {
+        const confirming = pendingMarkerDeleteId === marker.id;
+        const renaming = renamingMarkerId === marker.id;
+        const noteLabel = marker.note || 'Start here';
+        const noteClass = marker.note ? '' : ' is-empty';
+        const time = escapeHtml(formatMarkerTime(marker.time));
+        const seek = `seekToMarker(${Number(marker.time)})`;
+        let body = `
+            <button type="button" class="video-marker-jump" onclick="${seek}">
+                <span class="video-marker-time">${time}</span>
+                <span class="video-marker-note${noteClass}">${escapeHtml(noteLabel)}</span>
+            </button>`;
+        if (renaming) {
+            body = `
+            <button type="button" class="video-marker-time-btn" onclick="${seek}">${time}</button>
+            <input class="video-marker-note-input" data-marker-id="${marker.id}" value="${escapeHtml(marker.note || '')}" maxlength="280" placeholder="Rename this marker" onkeydown="handleMarkerRenameKey(event, ${marker.id})">`;
+        }
+        let actions = `
+                <button type="button" class="video-marker-rename" title="Rename" aria-label="Rename marker" onclick="startRenameMarker(${marker.id})">${markerPencilIcon()}</button>
+                <button type="button" class="video-marker-remove" title="Remove" aria-label="Remove marker" onclick="requestDeleteMarker(${marker.id})">${markerTrashIcon()}</button>`;
+        if (confirming) {
+            actions = `
+                <button type="button" class="video-marker-remove video-marker-text" onclick="deleteMarker(${marker.id})">Confirm</button>
+                <button type="button" class="video-marker-text" onclick="cancelDeleteMarker()">Cancel</button>`;
+        } else if (renaming) {
+            actions = `
+                <button type="button" class="video-marker-rename video-marker-text" onclick="commitMarkerRename(${marker.id})">Save</button>
+                <button type="button" class="video-marker-text" onclick="cancelRenameMarker()">Cancel</button>`;
+        }
+        return `
+        <li class="video-marker-item${confirming ? ' is-confirming' : ''}${renaming ? ' is-editing' : ''}" data-marker-id="${marker.id}">
+            ${body}
+            <div class="video-marker-actions">${actions}
+            </div>
+        </li>`;
+    }).join('');
+}
+
+function markerPencilIcon() {
+    return '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
+}
+
+function markerTrashIcon() {
+    return '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
+}
+
+function startRenameMarker(id) {
+    pendingMarkerDeleteId = null;
+    renamingMarkerId = id;
+    setMarkerStatus('');
+    renderMarkerList();
+    requestAnimationFrame(() => {
+        const input = document.querySelector(`.video-marker-note-input[data-marker-id="${id}"]`);
+        if (!input) return;
+        input.focus();
+        input.select();
+    });
+}
+
+function cancelRenameMarker() {
+    renamingMarkerId = null;
+    setMarkerStatus('');
+    renderMarkerList();
+}
+
+function handleMarkerRenameKey(event, id) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        commitMarkerRename(id);
+    } else if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelRenameMarker();
+    }
+}
+
+function commitMarkerRename(id) {
+    const input = document.querySelector(`.video-marker-note-input[data-marker-id="${id}"]`);
+    renameMarker(id, input ? input.value : '');
+}
+
+function renderMarkerTicks() {
+    const player = videoPlayer;
+    if (!player || !player.el) return;
+    const holder = player.el().querySelector('.vjs-progress-holder');
+    if (!holder) return;
+    holder.querySelectorAll('.vjs-marker-tick').forEach(tick => tick.remove());
+    const duration = player.duration();
+    if (!duration || !Number.isFinite(duration) || duration <= 0) return;
+    videoMarkers.forEach(marker => {
+        const tick = document.createElement('button');
+        tick.type = 'button';
+        tick.className = 'vjs-marker-tick';
+        tick.style.left = `${Math.min(100, Math.max(0, (marker.time / duration) * 100))}%`;
+        tick.setAttribute('aria-label', marker.note || `Marker at ${formatMarkerTime(marker.time)}`);
+        tick.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            seekToMarker(marker.time);
+        });
+        tick.addEventListener('mouseenter', () => showMarkerHoverTip(tick, marker));
+        tick.addEventListener('mouseleave', hideMarkerHoverTip);
+        tick.addEventListener('focus', () => showMarkerHoverTip(tick, marker));
+        tick.addEventListener('blur', hideMarkerHoverTip);
+        holder.appendChild(tick);
+    });
+}
+
+function seekToMarker(time) {
+    const player = videoPlayer || initVideoPlayer();
+    if (!player) return;
+    player.currentTime(Number(time) || 0);
+    player.play().catch(() => {});
+}
+
+function setMarkerStatus(message, isError) {
+    if (typeof setUiStatus === 'function') {
+        setUiStatus('markerStatus', message, isError);
+        return;
+    }
+    const el = document.getElementById('markerStatus');
+    if (!el) return;
+    el.hidden = !message;
+    el.textContent = message || '';
+    el.classList.toggle('is-error', Boolean(isError && message));
+}
+
+function requestDeleteMarker(id) {
+    renamingMarkerId = null;
+    pendingMarkerDeleteId = id;
+    setMarkerStatus('Click Confirm to remove this marker.');
+    renderMarkerList();
+}
+
+function cancelDeleteMarker() {
+    pendingMarkerDeleteId = null;
+    setMarkerStatus('');
+    renderMarkerList();
+}
+
+async function addMarkerAtCurrentTime() {
+    if (!currentVideoFilename) return;
+    const player = videoPlayer || initVideoPlayer();
+    const time = player && typeof player.currentTime === 'function' ? player.currentTime() : 0;
+    const input = document.getElementById('markerNoteInput');
+    const note = input ? input.value.trim() : '';
+    try {
+        const response = await fetch('/api/markers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ filename: currentVideoFilename, time, note })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not add marker');
+        }
+        if (input) input.value = '';
+        setMarkerStatus('');
+        setVideoMarkers(data.markers || []);
+    } catch (error) {
+        console.error('Add marker failed:', error);
+        setMarkerStatus(error.message, true);
+    }
+}
+
+async function renameMarker(id, nextName) {
+    const marker = videoMarkers.find(item => item.id === id);
+    const note = String(nextName || '').trim();
+    if (marker && note === (marker.note || '')) {
+        cancelRenameMarker();
+        return;
+    }
+    try {
+        const response = await fetch(`/api/marker/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ note })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not rename marker');
+        }
+        renamingMarkerId = null;
+        setMarkerStatus('');
+        setVideoMarkers(data.markers || []);
+    } catch (error) {
+        console.error('Rename marker failed:', error);
+        setMarkerStatus(error.message, true);
+        renderMarkerList();
+    }
+}
+
+async function deleteMarker(id) {
+    try {
+        const response = await fetch(`/api/marker/${id}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not remove marker');
+        }
+        pendingMarkerDeleteId = null;
+        renamingMarkerId = null;
+        setMarkerStatus('');
+        setVideoMarkers(data.markers || []);
+    } catch (error) {
+        console.error('Delete marker failed:', error);
+        setMarkerStatus(error.message, true);
     }
 }
 

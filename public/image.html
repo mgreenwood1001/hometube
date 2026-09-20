@@ -61,7 +61,10 @@
             <section class="content-danger-zone" aria-labelledby="removeContentHeading">
                 <h2 id="removeContentHeading">Remove from library</h2>
                 <p>This permanently deletes the file from disk and removes it from Movie Tube. Scroll was required so this stays out of the way while viewing.</p>
-                <button type="button" class="action-button danger-button" id="removeContentButton" onclick="removeCurrentMedia(this)">Remove this image</button>
+                <div class="danger-zone-actions">
+                    <button type="button" class="action-button danger-button" id="removeContentButton" onclick="removeCurrentMedia(this)">Remove this image</button>
+                    <button type="button" class="action-button" id="cancelRemoveContentButton" hidden onclick="cancelRemoveCurrentMedia()">Cancel</button>
+                </div>
                 <p class="remove-status" id="removeContentStatus" hidden></p>
             </section>
         </div>

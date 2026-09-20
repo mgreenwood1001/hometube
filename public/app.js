@@ -729,6 +729,8 @@ function searchByActor(name) {
 }
 
 let allActors = [];
+let pendingActorDeleteId = null;
+let renamingActorId = null;
 
 async function loadActors() {
     const actorsList = document.getElementById('actorsList');
@@ -751,15 +753,91 @@ function displayActors(actors) {
         actorsList.innerHTML = '<p class="loading">Add names that appear in file names, then click one to search.</p>';
         return;
     }
-    actorsList.innerHTML = actors.map(actor => `
+    actorsList.innerHTML = actors.map(actor => {
+        if (renamingActorId === actor.id) {
+            return `
+        <div class="actor-row is-editing">
+            <input class="actor-rename-input" data-actor-id="${actor.id}" type="text" maxlength="80" value="${escapeHtml(actor.name)}" onkeydown="handleActorRenameKey(event, ${actor.id})">
+            <button type="button" class="actor-save" onclick="commitActorRename(${actor.id})">Save</button>
+            <button type="button" class="actor-cancel" onclick="cancelActorEdit()">Cancel</button>
+        </div>`;
+        }
+        if (pendingActorDeleteId === actor.id) {
+            return `
+        <div class="actor-row is-confirming">
+            <span class="actor-confirm-label">Remove ${escapeHtml(actor.name)}?</span>
+            <button type="button" class="actor-remove is-confirm" onclick="removeActor(${actor.id})">Confirm</button>
+            <button type="button" class="actor-cancel" onclick="cancelActorEdit()">Cancel</button>
+        </div>`;
+        }
+        return `
         <div class="actor-row">
             <button type="button" class="stem-tag actor-tag" data-actor="${escapeHtml(actor.name)}" onclick="searchByActor(this.dataset.actor)">
                 ${escapeHtml(actor.name)} <span class="stem-count">${actor.count}</span>
             </button>
-            <button type="button" class="actor-edit" title="Rename" aria-label="Rename ${escapeHtml(actor.name)}" onclick="renameActor(${actor.id}, this.previousElementSibling.dataset.actor)">✎</button>
-            <button type="button" class="actor-remove" title="Remove from list" aria-label="Remove ${escapeHtml(actor.name)}" onclick="removeActor(${actor.id})">×</button>
-        </div>
-    `).join('');
+            <button type="button" class="actor-edit" title="Rename" aria-label="Rename ${escapeHtml(actor.name)}" onclick="startRenameActor(${actor.id})">✎</button>
+            <button type="button" class="actor-remove" title="Remove from list" aria-label="Remove ${escapeHtml(actor.name)}" onclick="requestRemoveActor(${actor.id})">×</button>
+        </div>`;
+    }).join('');
+}
+
+function setActorStatus(message, isError) {
+    if (typeof setUiStatus === 'function') {
+        setUiStatus('actorStatus', message, isError);
+        return;
+    }
+    const el = document.getElementById('actorStatus');
+    if (!el) return;
+    el.hidden = !message;
+    el.textContent = message || '';
+    el.classList.toggle('is-error', Boolean(isError && message));
+}
+
+function resetActorEdit() {
+    pendingActorDeleteId = null;
+    renamingActorId = null;
+}
+
+function startRenameActor(id) {
+    pendingActorDeleteId = null;
+    renamingActorId = id;
+    setActorStatus('');
+    displayActors(allActors);
+    requestAnimationFrame(() => {
+        const input = document.querySelector(`.actor-rename-input[data-actor-id="${id}"]`);
+        if (!input) return;
+        input.focus();
+        input.select();
+    });
+}
+
+function cancelActorEdit() {
+    resetActorEdit();
+    setActorStatus('');
+    displayActors(allActors);
+}
+
+function handleActorRenameKey(event, id) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        commitActorRename(id);
+    } else if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelActorEdit();
+    }
+}
+
+function commitActorRename(id) {
+    const input = document.querySelector(`.actor-rename-input[data-actor-id="${id}"]`);
+    renameActor(id, input ? input.value : '');
+}
+
+function requestRemoveActor(id) {
+    renamingActorId = null;
+    pendingActorDeleteId = id;
+    const actor = allActors.find(item => item.id === id);
+    setActorStatus(`Click Confirm to remove ${actor ? actor.name : 'this actor'} from the list.`);
+    displayActors(allActors);
 }
 
 async function addActor(event) {
@@ -779,20 +857,28 @@ async function addActor(event) {
             throw new Error(data.error || 'Could not add actor');
         }
         if (input) input.value = '';
+        resetActorEdit();
+        setActorStatus('');
         allActors = data.actors || [];
         displayActors(allActors);
         reloadVideosPreservingFilters();
     } catch (error) {
         console.error('Add actor failed:', error);
-        window.alert(error.message);
+        setActorStatus(error.message, true);
     }
 }
 
-async function renameActor(id, currentName) {
-    const next = window.prompt('Actor name', currentName || '');
-    if (next == null) return;
-    const name = next.trim();
-    if (!name || name === currentName) return;
+async function renameActor(id, nextName) {
+    const current = allActors.find(item => item.id === id);
+    const name = String(nextName || '').trim();
+    if (!name) {
+        setActorStatus('Enter a name to save.', true);
+        return;
+    }
+    if (current && name === current.name) {
+        cancelActorEdit();
+        return;
+    }
     try {
         const response = await fetch(`/api/actors/${id}`, {
             method: 'PUT',
@@ -804,17 +890,18 @@ async function renameActor(id, currentName) {
         if (!response.ok) {
             throw new Error(data.error || 'Could not rename actor');
         }
+        resetActorEdit();
+        setActorStatus('');
         allActors = data.actors || [];
         displayActors(allActors);
         reloadVideosPreservingFilters();
     } catch (error) {
         console.error('Rename actor failed:', error);
-        window.alert(error.message);
+        setActorStatus(error.message, true);
     }
 }
 
 async function removeActor(id) {
-    if (!window.confirm('Remove this actor from the list?')) return;
     try {
         const response = await fetch(`/api/actors/${id}`, {
             method: 'DELETE',
@@ -824,17 +911,76 @@ async function removeActor(id) {
         if (!response.ok) {
             throw new Error(data.error || 'Could not remove actor');
         }
+        resetActorEdit();
+        setActorStatus('');
         allActors = data.actors || [];
         displayActors(allActors);
         reloadVideosPreservingFilters();
     } catch (error) {
         console.error('Remove actor failed:', error);
-        window.alert(error.message);
+        setActorStatus(error.message, true);
     }
 }
 
 function reloadVideosPreservingFilters() {
     loadVideos(currentPage, currentStem, currentFilterMode, currentResolution, currentFileType, currentDateFrom, currentDateTo);
+}
+
+async function rescanLibrary() {
+    const buttons = ['rescanLibraryBtn', 'rescanLibraryHeaderBtn']
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+    const status = document.getElementById('rescanStatus');
+    if (buttons.some(button => button.disabled)) return;
+    buttons.forEach(button => {
+        button.disabled = true;
+        button.classList.add('is-busy');
+    });
+    if (typeof setUiStatus === 'function') {
+        setUiStatus('rescanStatus', 'Scanning disk for new files…');
+    } else if (status) {
+        status.hidden = false;
+        status.textContent = 'Scanning disk for new files…';
+        status.classList.remove('is-error');
+    }
+    try {
+        const response = await fetch('/api/library/scan', {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'Could not scan the library');
+        }
+        const message = `Scan complete. Found ${data.found}. Added ${data.added}. Removed ${data.removed}.`;
+        if (typeof setUiStatus === 'function') {
+            setUiStatus('rescanStatus', message);
+        } else if (status) {
+            status.hidden = false;
+            status.textContent = message;
+            status.classList.remove('is-error');
+        }
+        if (typeof loadStems === 'function') loadStems();
+        if (typeof loadResolutions === 'function') loadResolutions();
+        if (typeof loadDateRange === 'function') loadDateRange();
+        if (typeof loadDateCounts === 'function') loadDateCounts();
+        if (typeof loadActors === 'function') loadActors();
+        reloadVideosPreservingFilters();
+    } catch (error) {
+        console.error('Library scan failed:', error);
+        if (typeof setUiStatus === 'function') {
+            setUiStatus('rescanStatus', error.message, true);
+        } else if (status) {
+            status.hidden = false;
+            status.textContent = error.message;
+            status.classList.add('is-error');
+        }
+    } finally {
+        buttons.forEach(button => {
+            button.disabled = false;
+            button.classList.remove('is-busy');
+        });
+    }
 }
 
 function showFavorites() {
@@ -1161,7 +1307,7 @@ function playVideo(fullPath) {
             } else if (error.message) {
                 errorMsg = error.message;
             }
-            alert(errorMsg);
+            console.error(errorMsg);
             player.off('error', errorHandler);
         }
     };
@@ -1526,7 +1672,11 @@ function initializeDateRangePicker() {
     // Check if flatpickr is available
     if (typeof flatpickr === 'undefined') {
         console.error('Flatpickr library not loaded. Please ensure the script is included in index.html');
-        alert('Date picker library not loaded. Please refresh the page.');
+        const dateInputs = document.getElementById('dateRangeInputs');
+        if (dateInputs) dateInputs.hidden = false;
+        if (typeof setUiStatus === 'function') {
+            setUiStatus('dateFilterStatus', 'Date picker library not loaded. Refresh the page.', true);
+        }
         return;
     }
     
@@ -1671,17 +1821,15 @@ function updateDatePickerDayCounts(instance) {
 }
 
 function applyDateFilter() {
-    if (!dateRangePicker) {
-        alert('Please select a date range first');
+    if (!dateRangePicker || !dateRangePicker.selectedDates.length) {
+        if (typeof setUiStatus === 'function') {
+            setUiStatus('dateFilterStatus', 'Select a date range first.', true);
+        }
         return;
     }
+    if (typeof setUiStatus === 'function') setUiStatus('dateFilterStatus', '');
     
     const selectedDates = dateRangePicker.selectedDates;
-    
-    if (selectedDates.length === 0) {
-        alert('Please select a date range');
-        return;
-    }
     
     let dateFrom = null;
     let dateTo = null;
